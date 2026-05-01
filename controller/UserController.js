@@ -68,10 +68,11 @@ export const loginUser = async (req, res) => {
         if (!user.isActive) return res.status(403).json({ message: "Your account has been disabled. Please contact your administrator.", success: false, blocked: true });
         const token = genrateToken({ userId: user._id, role: user.role.name, company: user?.companyId?._id, permissions: user.role.permissions || [] });
         user.password = undefined;
+        const isProd = EnvData.NODE_ENV === "production";
         res.cookie("token", token, {
             httpOnly: true,
-            secure: EnvData.NODE_ENV === "production",
-            sameSite: "lax",
+            secure: isProd,
+            sameSite: isProd ? "none" : "lax",
             maxAge: 24 * 60 * 60 * 1000,
         }).status(200).json({ user, message: "Login successful", success: true });
         sendMail({ email, title: "Login Successful", msg: loginTemplate(user.firstName) });
@@ -342,7 +343,8 @@ export const changePassword = async (req, res) => {
 
 export const logoutUser = async (req, res) => {
     try {
-        res.clearCookie("token", { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" });
+        const isProd = EnvData.NODE_ENV === "production";
+        res.clearCookie("token", { httpOnly: true, secure: isProd, sameSite: isProd ? "none" : "lax" });
         return res.status(200).json({ message: "Logged out successfully", success: true });
     } catch (error) {
         res.status(500).json({ message: "Error logging out", success: false });
