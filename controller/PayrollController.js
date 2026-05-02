@@ -36,9 +36,13 @@ export const generatePayroll = async (req, res) => {
         const companyId = reqUser.companyId;
 
         // Fetch employees to process
-        const userFilter = { companyId, isActive: true, isDeleted: false };
+        const userFilter = { companyId, isActive: true };
         if (targetUserId) userFilter._id = targetUserId;
         const employees = await User.find(userFilter).select("_id workShift").lean();
+
+        if (employees.length === 0) {
+            return res.status(200).json({ generated: 0, skipped: 0, errors: [], message: "No active employees found for this company", success: true });
+        }
 
         const results = { generated: 0, skipped: 0, errors: [] };
 
@@ -50,7 +54,7 @@ export const generatePayroll = async (req, res) => {
 
                 // Get active salary structure
                 const structure = await SalaryStructure.findOne({ userId: emp._id, isActive: true });
-                if (!structure) { results.skipped++; continue; }
+                if (!structure) { results.skipped++; results.skippedReasons = results.skippedReasons || []; results.skippedReasons.push({ userId: emp._id, reason: "No active salary structure" }); continue; }
 
                 // Get week-off from work shift
                 const WorkShift = (await import("../models/workShiftSchema.js")).default;
@@ -58,6 +62,7 @@ export const generatePayroll = async (req, res) => {
                 const weekOff = shift?.weekOff || [0, 6];
 
                 const totalWorkingDays = await getWorkingDays(month, companyId, weekOff);
+                if (!totalWorkingDays || totalWorkingDays === 0) { results.skipped++; continue; }
 
                 // Get attendance for the month
                 const attendanceRecords = await Attendance.find({
@@ -90,12 +95,19 @@ export const generatePayroll = async (req, res) => {
                     if (l.leaveTypeId?.isPaid) paidLeaveDays += l.days;
                 });
 
+                // Auto-calculate absent days from working days if no attendance records
+                const attendedDays = presentDays + halfDays * 0.5;
+                const calculatedAbsent = absentDays === 0 && presentDays === 0
+                    ? Math.max(0, totalWorkingDays - paidLeaveDays)
+                    : absentDays;
+
                 // LOP = absent days not covered by paid leave
-                const effectivePaidLeave = Math.min(paidLeaveDays, absentDays);
-                const lopDays = Math.max(0, absentDays - effectivePaidLeave) + (halfDays * 0.5);
+                const effectivePaidLeave = Math.min(paidLeaveDays, calculatedAbsent);
+                const lopDays = parseFloat((Math.max(0, calculatedAbsent - effectivePaidLeave) + (halfDays * 0.5)).toFixed(2));
 
                 // Compute salary components
-                const perDaySalary = structure.grossEarnings / totalWorkingDays;
+                const grossForCalc = structure.grossEarnings > 0 ? structure.grossEarnings : structure.basic;
+                const perDaySalary = grossForCalc / totalWorkingDays;
                 const lopDeduction = parseFloat((lopDays * perDaySalary).toFixed(2));
 
                 // Build component list with resolved amounts
@@ -125,7 +137,7 @@ export const generatePayroll = async (req, res) => {
                     month,
                     totalWorkingDays,
                     presentDays,
-                    absentDays,
+                    absentDays: calculatedAbsent,
                     halfDays,
                     paidLeaveDays: effectivePaidLeave,
                     lopDays,
@@ -144,7 +156,11 @@ export const generatePayroll = async (req, res) => {
             }
         }
 
-        res.status(200).json({ ...results, message: `Payroll generated: ${results.generated} records`, success: true });
+        const msg = results.generated === 0 && results.skipped > 0
+            ? `Payroll skipped for all ${results.skipped} employee(s). Ensure salary structures are defined.`
+            : `Payroll generated: ${results.generated} record(s)${results.skipped > 0 ? `, ${results.skipped} skipped` : ""}`;
+
+        res.status(200).json({ ...results, message: msg, success: true });
     } catch (err) {
         res.status(500).json({ message: err.message, success: false });
     }
@@ -161,7 +177,14 @@ export const getPayrollRuns = async (req, res) => {
         if (status) filter.status = status;
 
         const runs = await PayrollRun.find(filter)
-            .populate("userId", "firstName lastName employeeCode department designation profilePic")
+            .populate({
+                path: "userId",
+                select: "firstName lastName employeeCode profilePic joiningDate department designation address",
+                populate: [
+                    { path: "department", select: "name" },
+                    { path: "designation", select: "name" },
+                ],
+            })
             .populate("approvedBy", "firstName lastName")
             .sort({ month: -1, createdAt: -1 });
 
@@ -179,6 +202,14 @@ export const getMyPayslips = async (req, res) => {
         if (month) filter.month = month;
 
         const runs = await PayrollRun.find(filter)
+            .populate({
+                path: "userId",
+                select: "firstName lastName employeeCode profilePic joiningDate department designation address",
+                populate: [
+                    { path: "department", select: "name" },
+                    { path: "designation", select: "name" },
+                ],
+            })
             .populate("salaryStructureId", "ctc basic")
             .populate("approvedBy", "firstName lastName")
             .sort({ month: -1 });

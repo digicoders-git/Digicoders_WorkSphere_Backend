@@ -14,7 +14,7 @@ const normalizeDate = (date) => {
 
 export const registerUser = async (req, res) => {
     try {
-        const { firstName, lastName, email, phone, password, role, gender, employeeCode, joiningDate, dateOfBirth, companyId, department, designation, workShift, employmentStatus, reportingTo } = req.body;
+        const { firstName, lastName, email, phone, password, role, gender, employeeCode, joiningDate, dateOfBirth, companyId, department, designation, workShift, employmentStatus, reportingTo, address } = req.body;
         if (!firstName || !lastName || !email || !phone || !password || !role || !companyId) {
             return res.status(400).json({ message: "All fields are required", success: false });
         }
@@ -22,7 +22,7 @@ export const registerUser = async (req, res) => {
         if (existingUser) return res.status(400).json({ message: "User already exists", success: false });
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const user = new User({ firstName, lastName, email, phone, password: hashedPassword, role, gender, employeeCode, joiningDate: normalizeDate(joiningDate), dateOfBirth: normalizeDate(dateOfBirth), companyId, department, designation, workShift, employmentStatus, reportingTo, createdBy: req.user?.userId || null });
+        const user = new User({ firstName, lastName, email, phone, password: hashedPassword, role, gender, employeeCode, joiningDate: normalizeDate(joiningDate), dateOfBirth: normalizeDate(dateOfBirth), companyId, department, designation, workShift, employmentStatus, reportingTo, address, createdBy: req.user?.userId || null });
         await user.save();
         res.status(201).json({ message: "User registered successfully", success: true });
         await sendMail({ email, title: "Welcome to HRMS", msg: userCreatedTemplate(user, password) });
@@ -193,7 +193,7 @@ export const getAllUsers = async (req, res) => {
 
 export const updateUserProfile = async (req, res) => {
     try {
-        const { firstName, lastName, phone, password, gender, employeeCode, joiningDate, dateOfBirth, department, designation, workShift, employmentStatus, reportingTo } = req.body;
+        const { firstName, lastName, phone, password, gender, employeeCode, joiningDate, dateOfBirth, department, designation, workShift, employmentStatus, reportingTo, address } = req.body;
         const profilePic = req.file ? { url: req.file.path, publicId: req.file.filename } : null;
         const user = await User.findById(req.user.userId);
         if (!user) return res.status(404).json({ message: "User not found", success: false });
@@ -201,6 +201,7 @@ export const updateUserProfile = async (req, res) => {
         if (firstName) user.firstName = firstName;
         if (lastName) user.lastName = lastName;
         if (phone) user.phone = phone;
+        if (address !== undefined) user.address = address;
         if (gender) user.gender = gender;
         if (employeeCode) user.employeeCode = employeeCode;
         if (joiningDate) user.joiningDate = normalizeDate(joiningDate);
@@ -234,13 +235,14 @@ export const updateUserProfile = async (req, res) => {
 
 export const adminUpdateUser = async (req, res) => {
     try {
-        const { firstName, lastName, phone, role, gender, employeeCode, joiningDate, dateOfBirth, companyId, workShift, reportingTo, employmentStatus, department, designation } = req.body;
+        const { firstName, lastName, phone, role, gender, employeeCode, joiningDate, dateOfBirth, companyId, workShift, reportingTo, employmentStatus, department, designation, address } = req.body;
         const user = await User.findById(req.params.id);
         if (!user) return res.status(404).json({ message: "User not found", success: false });
 
         if (firstName) user.firstName = firstName;
         if (lastName) user.lastName = lastName;
         if (phone) user.phone = phone;
+        if (address !== undefined) user.address = address;
         if (role) user.role = role;
         if (gender) user.gender = gender;
         if (employeeCode) user.employeeCode = employeeCode;
