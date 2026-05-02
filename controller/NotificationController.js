@@ -27,10 +27,27 @@ export const getMyNotifications = async (req, res) => {
 // GET /api/notifications/unread-count
 export const getUnreadCount = async (req, res) => {
     try {
-        const count = await Notification.countDocuments({ userId: req.user.userId, isRead: false });
-        res.status(200).json({ count, success: true });
+        const userId = req.user.userId;
+        const [count, taskCommentCount] = await Promise.all([
+            Notification.countDocuments({ userId, isRead: false }),
+            Notification.countDocuments({ userId, isRead: false, type: "task_comment" }),
+        ]);
+        res.status(200).json({ count, taskCommentCount, success: true });
     } catch (err) {
         res.status(500).json({ message: "Error fetching count", success: false });
+    }
+};
+
+// PATCH /api/notifications/mark-project-read/:projectId
+export const markProjectNotificationsRead = async (req, res) => {
+    try {
+        await Notification.updateMany(
+            { userId: req.user.userId, isRead: false, type: "task_comment", "metadata.projectId": req.params.projectId },
+            { isRead: true }
+        );
+        res.status(200).json({ success: true });
+    } catch (err) {
+        res.status(500).json({ message: "Error marking project notifications", success: false });
     }
 };
 

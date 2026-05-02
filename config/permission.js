@@ -75,4 +75,18 @@ export const permission = {
         APPROVE_PAYROLL: "APPROVE_PAYROLL",
         VIEW_PAYROLL: "VIEW_PAYROLL",
     },
+    Project: {
+        CREATE_PROJECT: "CREATE_PROJECT",
+        UPDATE_PROJECT: "UPDATE_PROJECT",
+        DELETE_PROJECT: "DELETE_PROJECT",
+        VIEW_PROJECT: "VIEW_PROJECT",
+        VIEW_ALL_PROJECTS: "VIEW_ALL_PROJECTS",
+    },
+    Task: {
+        CREATE_TASK: "CREATE_TASK",
+        UPDATE_TASK: "UPDATE_TASK",
+        DELETE_TASK: "DELETE_TASK",
+        VIEW_TASK: "VIEW_TASK",
+        VIEW_ALL_TASKS: "VIEW_ALL_TASKS",
+    },
 };

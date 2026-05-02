@@ -16,6 +16,8 @@ import LeaveTypeRoute from './route/LeaveTypeRoute.js'
 import LeaveRoute from './route/LeaveRoute.js'
 import RegularizationRoute from './route/RegularizationRoute.js'
 import PayrollRoute from './route/PayrollRoute.js'
+import ProjectRoute from './route/ProjectRoute.js'
+import TaskRoute from './route/TaskRoute.js'
 import cookieParser from 'cookie-parser'
 import { startScheduler } from './utills/scheduler.js'
 
@@ -52,6 +54,8 @@ app.use('/api/leave-types', LeaveTypeRoute);
 app.use('/api/leaves', LeaveRoute);
 app.use('/api/regularization', RegularizationRoute);
 app.use('/api/payroll', PayrollRoute);
+app.use('/api/projects', ProjectRoute);
+app.use('/api/tasks', TaskRoute);
 
 app.get('/', (req, res) => {
     res.send("API is running")
