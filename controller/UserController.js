@@ -6,6 +6,7 @@ import { genrateToken } from "../middleware/authMiddleware.js";
 import { loginTemplate, userCreatedTemplate, resetPasswordOtpTemplate } from "../utills/emailTemplates/userTemplate.js";
 import EnvData from "../config/EnvData.js";
 import { createNotification } from "../utills/notificationHelper.js";
+import { uploadToCloudinary } from "../middleware/multer.js";
 
 const normalizeDate = (date) => {
     if (!date) return null;
@@ -194,7 +195,7 @@ export const getAllUsers = async (req, res) => {
 export const updateUserProfile = async (req, res) => {
     try {
         const { firstName, lastName, phone, password, gender, employeeCode, joiningDate, dateOfBirth, department, designation, workShift, employmentStatus, reportingTo, address } = req.body;
-        const profilePic = req.file ? { url: req.file.path, publicId: req.file.filename } : null;
+        const profilePic = req.file ? await uploadToCloudinary(req.file, "digicoders/hrmsv2/profiles") : null;
         const user = await User.findById(req.user.userId);
         if (!user) return res.status(404).json({ message: "User not found", success: false });
 
@@ -213,7 +214,7 @@ export const updateUserProfile = async (req, res) => {
         if (reportingTo) user.reportingTo = reportingTo;
         if (password) user.password = await bcrypt.hash(password, 10);
         if (profilePic) {
-            if (user.profilePic?.publicId) await cloudinary.uploader.destroy(user.profilePic.publicId);
+            if (user.profilePic?.publicId) await cloudinary.uploader.destroy(user.profilePic.publicId, { resource_type: "image" }).catch(() => {});
             user.profilePic = { url: profilePic.url, publicId: profilePic.publicId };
         }
         await user.save();

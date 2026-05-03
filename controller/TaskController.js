@@ -2,6 +2,7 @@ import Task from "../models/TaskSchema.js";
 import Project from "../models/ProjectSchema.js";
 import cloudinary from "../utills/cloudinary.js";
 import { createNotification } from "../utills/notificationHelper.js";
+import { uploadManyToCloudinary } from "../middleware/multer.js";
 
 const populateTask = (query) =>
     query
@@ -20,12 +21,10 @@ export const createTask = async (req, res) => {
         const project = await Project.findOne({ _id: projectId, isDeleted: false });
         if (!project) return res.status(404).json({ success: false, message: "Project not found" });
 
-        const attachments = (req.files || []).map(f => ({
-            name: f.originalname,
-            url: f.path,
-            publicId: f.filename,
-            type: f.mimetype?.split("/")[0] || "raw",
-            uploadedBy: req.user.userId,
+        const uploaded = await uploadManyToCloudinary(req.files || []);
+        const attachments = uploaded.map(f => ({
+            name: f.name, url: f.url, publicId: f.publicId,
+            type: f.resourceType, uploadedBy: req.user.userId,
         }));
 
         const assignedUsers = assignedTo ? (Array.isArray(assignedTo) ? assignedTo : [assignedTo]) : [];
@@ -165,12 +164,10 @@ export const deleteTask = async (req, res) => {
 export const addComment = async (req, res) => {
     try {
         const { text } = req.body;
-        const attachments = (req.files || []).map(f => ({
-            name: f.originalname,
-            url: f.path,
-            publicId: f.filename,
-            type: f.mimetype?.split("/")[0] || "raw",
-            uploadedBy: req.user.userId,
+        const uploaded = await uploadManyToCloudinary(req.files || []);
+        const attachments = uploaded.map(f => ({
+            name: f.name, url: f.url, publicId: f.publicId,
+            type: f.resourceType, uploadedBy: req.user.userId,
         }));
 
         const task = await Task.findByIdAndUpdate(
@@ -220,7 +217,7 @@ export const deleteComment = async (req, res) => {
 
         // Delete comment attachments from cloudinary
         for (const att of comment.attachments) {
-            if (att.publicId) await cloudinary.uploader.destroy(att.publicId, { resource_type: "raw" }).catch(() => {});
+            if (att.publicId) await cloudinary.uploader.destroy(att.publicId, { resource_type: att.type || "raw" }).catch(() => {});
         }
 
         comment.deleteOne();
@@ -234,12 +231,10 @@ export const deleteComment = async (req, res) => {
 
 export const addAttachment = async (req, res) => {
     try {
-        const attachments = (req.files || []).map(f => ({
-            name: f.originalname,
-            url: f.path,
-            publicId: f.filename,
-            type: f.mimetype?.split("/")[0] || "raw",
-            uploadedBy: req.user.userId,
+        const uploaded = await uploadManyToCloudinary(req.files || []);
+        const attachments = uploaded.map(f => ({
+            name: f.name, url: f.url, publicId: f.publicId,
+            type: f.resourceType, uploadedBy: req.user.userId,
         }));
 
         const task = await Task.findByIdAndUpdate(
@@ -261,7 +256,7 @@ export const deleteAttachment = async (req, res) => {
         const att = task.attachments.id(attachmentId);
         if (!att) return res.status(404).json({ success: false, message: "Attachment not found" });
 
-        if (att.publicId) await cloudinary.uploader.destroy(att.publicId, { resource_type: "raw" }).catch(() => {});
+        if (att.publicId) await cloudinary.uploader.destroy(att.publicId, { resource_type: att.type || "raw" }).catch(() => {});
         att.deleteOne();
         await task.save();
         res.json({ success: true, message: "Attachment deleted" });

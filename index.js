@@ -70,8 +70,12 @@ app.use('/api/health', (req, res) => {
 
 
 
-app.listen(EnvData.PORT,()=>{
+const server = app.listen(EnvData.PORT,()=>{
     connectdb()
     startScheduler()
     console.log(`Server is running on port ${EnvData.PORT}`)
 })
+
+server.timeout = 120000;          // 2 min — time for a single request to complete
+server.keepAliveTimeout = 120000; // 2 min — keep socket alive between requests
+server.headersTimeout = 125000;   // slightly above keepAliveTimeout
