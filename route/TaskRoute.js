@@ -6,11 +6,10 @@ import {
     updateTask, deleteTask,
     addComment, deleteComment,
     addAttachment, deleteAttachment,
-    getMyTaskHistory,
+    getMyTaskHistory, grantCommentAccess,
 } from "../controller/TaskController.js";
 
 const router = express.Router();
-
 router.use(protect);
 
 router.post("/", upload.array("attachments", 10), createTask);
@@ -19,6 +18,7 @@ router.get("/project/:projectId", getTasksByProject);
 router.get("/:id", getTaskById);
 router.put("/:id", updateTask);
 router.delete("/:id", deleteTask);
+router.patch("/:id/comment-access", grantCommentAccess);
 
 router.post("/:id/comments", upload.array("attachments", 5), addComment);
 router.delete("/:id/comments/:commentId", deleteComment);

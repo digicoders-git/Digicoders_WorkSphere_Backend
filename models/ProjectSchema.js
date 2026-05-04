@@ -7,10 +7,14 @@ const EditLogSchema = new mongoose.Schema({
 });
 
 const FileBundleSchema = new mongoose.Schema({
-    name: { type: String, required: true },          // Main display name
+    name: { type: String, required: true },
     uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     isPublic: { type: Boolean, default: true },
-    sharedWith: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    publicPermission: { type: String, enum: ["read", "read_write"], default: "read" },
+    sharedWith: [{
+        user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+        permission: { type: String, enum: ["read", "read_write"], default: "read" },
+    }],
     links: [{
         title: { type: String },
         url: { type: String, required: true },

@@ -11,16 +11,24 @@ const isProjectAdmin = (project, userId, userRole, userPermissions) =>
 
 const populateBundles = (query) => query.populate([
     { path: "fileBundles.uploadedBy", select: "firstName lastName" },
-    { path: "fileBundles.sharedWith", select: "firstName lastName profilePic" },
+    { path: "fileBundles.sharedWith.user", select: "firstName lastName profilePic" },
     { path: "fileBundles.editLog.by", select: "firstName lastName" },
 ]);
 
-const canAccessBundle = (bundle, userId, admin) =>
-    admin ||
-    bundle.isPublic ||
-    bundle.uploadedBy._id?.toString() === userId ||
-    bundle.uploadedBy.toString?.() === userId ||
-    bundle.sharedWith.some(u => (u._id || u).toString() === userId);
+const canAccessBundle = (bundle, userId, admin) => {
+    if (admin) return true;
+    if (bundle.isPublic) return true;
+    if ((bundle.uploadedBy._id || bundle.uploadedBy).toString() === userId) return true;
+    return bundle.sharedWith.some(s => (s.user?._id || s.user).toString() === userId);
+};
+
+const canEditBundle = (bundle, userId, admin) => {
+    if (admin) return true;
+    if ((bundle.uploadedBy._id || bundle.uploadedBy).toString() === userId) return true;
+    if (bundle.isPublic && bundle.publicPermission === "read_write") return true;
+    const entry = bundle.sharedWith.find(s => (s.user?._id || s.user).toString() === userId);
+    return entry?.permission === "read_write";
+};
 
 // ── CRUD ──────────────────────────────────────────────────────────────────────
 
@@ -115,7 +123,9 @@ export const getFileBundles = async (req, res) => {
         const userId = req.user.userId;
         const admin = isProjectAdmin(project, userId, req.user.role, req.user.permissions);
 
-        const bundles = project.fileBundles.filter(b => canAccessBundle(b, userId, admin));
+        const bundles = project.fileBundles
+            .filter(b => canAccessBundle(b, userId, admin))
+            .map(b => ({ ...b.toObject(), canEdit: canEditBundle(b, userId, admin) }));
         res.json({ success: true, data: bundles, isAdmin: admin });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
@@ -124,12 +134,16 @@ export const getFileBundles = async (req, res) => {
 
 export const createFileBundle = async (req, res) => {
     try {
-        const { name, links, envContent, isPublic, sharedWith } = req.body;
+        const { name, links, envContent, isPublic, publicPermission, sharedWith } = req.body;
         const project = await Project.findOne({ _id: req.params.id, isDeleted: false });
         if (!project) return res.status(404).json({ success: false, message: "Project not found" });
 
         const pub = isPublic === "false" || isPublic === false ? false : true;
-        const shared = sharedWith ? (Array.isArray(sharedWith) ? sharedWith : [sharedWith]) : [];
+        const shared = sharedWith
+            ? (Array.isArray(sharedWith) ? sharedWith : JSON.parse(sharedWith)).map(s =>
+                typeof s === "object" ? s : { user: s, permission: "read" }
+              )
+            : [];
 
         let parsedLinks = [];
         try { parsedLinks = links ? JSON.parse(links) : []; } catch { parsedLinks = []; }
@@ -146,6 +160,7 @@ export const createFileBundle = async (req, res) => {
         const bundle = {
             name,
             isPublic: pub,
+            publicPermission: publicPermission || "read",
             sharedWith: shared,
             uploadedBy: req.user.userId,
             links: parsedLinks.filter(l => l.url?.trim()),
@@ -168,7 +183,7 @@ export const createFileBundle = async (req, res) => {
 export const updateFileBundle = async (req, res) => {
     try {
         const { id, bundleId } = req.params;
-        const { addLinks, removeLinks, removeFiles, envContent, isPublic, sharedWith } = req.body;
+        const { addLinks, removeLinks, removeFiles, envContent, isPublic, publicPermission, sharedWith } = req.body;
 
         const project = await Project.findOne({ _id: id, isDeleted: false });
         if (!project) return res.status(404).json({ success: false, message: "Project not found" });
@@ -178,8 +193,8 @@ export const updateFileBundle = async (req, res) => {
         const bundle = project.fileBundles.id(bundleId);
         if (!bundle) return res.status(404).json({ success: false, message: "Bundle not found" });
 
-        const canEdit = admin || canAccessBundle(bundle, userId, false);
-        if (!canEdit) return res.status(403).json({ success: false, message: "Access denied" });
+        if (!canEditBundle(bundle, userId, admin))
+            return res.status(403).json({ success: false, message: "You only have read access" });
 
         const logEntries = [];
 
@@ -229,7 +244,11 @@ export const updateFileBundle = async (req, res) => {
         // Update access (admin only)
         if (admin) {
             if (isPublic !== undefined) bundle.isPublic = isPublic === "false" || isPublic === false ? false : true;
-            if (sharedWith !== undefined) bundle.sharedWith = Array.isArray(sharedWith) ? sharedWith : [sharedWith];
+            if (publicPermission !== undefined) bundle.publicPermission = publicPermission;
+            if (sharedWith !== undefined) {
+                const parsed = typeof sharedWith === "string" ? JSON.parse(sharedWith) : sharedWith;
+                bundle.sharedWith = parsed.map(s => typeof s === "object" ? s : { user: s, permission: "read" });
+            }
         }
 
         logEntries.forEach(e => bundle.editLog.push(e));
@@ -272,7 +291,7 @@ export const deleteFileBundle = async (req, res) => {
 export const updateBundleAccess = async (req, res) => {
     try {
         const { id, bundleId } = req.params;
-        const { sharedWith, isPublic } = req.body;
+        const { sharedWith, isPublic, publicPermission } = req.body;
         const project = await Project.findOne({ _id: id, isDeleted: false });
         if (!project) return res.status(404).json({ success: false, message: "Project not found" });
 
@@ -283,9 +302,11 @@ export const updateBundleAccess = async (req, res) => {
         const bundle = project.fileBundles.id(bundleId);
         if (!bundle) return res.status(404).json({ success: false, message: "Bundle not found" });
 
-        if (sharedWith !== undefined) bundle.sharedWith = sharedWith;
+        if (sharedWith !== undefined)
+            bundle.sharedWith = sharedWith.map(s => typeof s === "object" ? s : { user: s, permission: "read" });
         if (isPublic !== undefined) bundle.isPublic = isPublic;
-        bundle.editLog.push({ action: `Access updated`, by: userId });
+        if (publicPermission !== undefined) bundle.publicPermission = publicPermission;
+        bundle.editLog.push({ action: "Access updated", by: userId });
 
         await project.save();
         const updated = await populateBundles(Project.findById(id));

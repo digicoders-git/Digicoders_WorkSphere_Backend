@@ -8,11 +8,22 @@ const populateTask = (query) =>
     query
         .populate("assignedTo", "firstName lastName profilePic email")
         .populate("createdBy", "firstName lastName profilePic")
+        .populate("qaAssignedTo", "firstName lastName profilePic")
         .populate("comments.author", "firstName lastName profilePic")
         .populate("attachments.uploadedBy", "firstName lastName")
         .populate("comments.attachments.uploadedBy", "firstName lastName")
         .populate("assignmentHistory.user", "firstName lastName profilePic")
-        .populate("assignmentHistory.by", "firstName lastName");
+        .populate("assignmentHistory.by", "firstName lastName")
+        .populate("commentAllowedUsers", "firstName lastName");
+
+const STATUS_LABELS = {
+    todo: "To Do", in_progress: "In Progress", qa: "QA",
+    admin_review: "Admin Review", done: "Done",
+};
+
+const pushEvent = (task, eventType, text, meta, byUserId) => {
+    task.comments.push({ isEvent: true, eventType, text, eventMeta: meta, author: byUserId, createdAt: new Date() });
+};
 
 export const createTask = async (req, res) => {
     try {
@@ -57,7 +68,7 @@ export const getTasksByProject = async (req, res) => {
         );
 
         const filter = { project: projectId, isDeleted: false };
-        if (!isAdmin) filter.assignedTo = userId;
+        if (!isAdmin) filter.$or = [{ assignedTo: userId }, { qaAssignedTo: userId }];
 
         const tasks = await populateTask(Task.find(filter).sort({ createdAt: -1 }));
         res.json({ success: true, data: tasks });
@@ -76,9 +87,10 @@ export const getTaskById = async (req, res) => {
             ["VIEW_ALL_TASKS", "CREATE_TASK"].includes(p)
         );
         const isAssigned = task.assignedTo.some(u => u._id.toString() === userId);
+        const isQA = task.qaAssignedTo?._id?.toString() === userId;
         const isCreator = task.createdBy._id.toString() === userId;
 
-        if (!isAdmin && !isAssigned && !isCreator)
+        if (!isAdmin && !isAssigned && !isQA && !isCreator)
             return res.status(403).json({ success: false, message: "Access denied" });
 
         res.json({ success: true, data: task });
@@ -89,39 +101,151 @@ export const getTaskById = async (req, res) => {
 
 export const updateTask = async (req, res) => {
     try {
-        const { assignedTo, ...rest } = req.body;
-        const task = await Task.findById(req.params.id);
+        const { assignedTo, qaAssignedTo, status, qaStatus, linkedBundles, ...rest } = req.body;
+        const task = await Task.findById(req.params.id)
+            .populate("assignedTo", "firstName lastName")
+            .populate("createdBy", "firstName lastName")
+            .populate("qaAssignedTo", "firstName lastName");
         if (!task) return res.status(404).json({ success: false, message: "Task not found" });
 
-        const historyEntries = [];
-        const notifyAdded = [];
-        const notifyRemoved = [];
+        const userId = req.user.userId;
+        const isAdmin = req.user.role === "super_admin" || (req.user.permissions || []).some(p =>
+            ["CREATE_TASK", "UPDATE_TASK"].includes(p)
+        );
+        const isAssigned = task.assignedTo.some(u => u._id.toString() === userId);
+        const isQA = task.qaAssignedTo?._id?.toString() === userId;
 
-        if (assignedTo !== undefined) {
+        // QA user: can only update qaStatus
+        if (isQA && !isAdmin) {
+            if (qaStatus === undefined)
+                return res.status(403).json({ success: false, message: "QA users can only update QA result" });
+        }
+
+        // Non-admin, non-QA: only allowed stage transitions
+        if (status && status !== task.status && !isAdmin && !isQA) {
+            if (!isAssigned)
+                return res.status(403).json({ success: false, message: "Not assigned to this task" });
+            const allowed = { todo: "in_progress", in_progress: "qa" };
+            if (allowed[task.status] !== status)
+                return res.status(403).json({ success: false, message: "Invalid stage transition" });
+        }
+
+        const notifyAdded = [], notifyRemoved = [];
+
+        // Handle assignedTo changes (admin only)
+        if (assignedTo !== undefined && isAdmin) {
             const newIds = (Array.isArray(assignedTo) ? assignedTo : [assignedTo]).map(String);
-            const oldIds = task.assignedTo.map(String);
-
+            const oldIds = task.assignedTo.map(u => u._id.toString());
             const added = newIds.filter(id => !oldIds.includes(id));
             const removed = oldIds.filter(id => !newIds.includes(id));
 
             added.forEach(id => {
-                historyEntries.push({ user: id, action: "assigned", by: req.user.userId });
+                task.assignmentHistory.push({ user: id, action: "assigned", by: userId });
                 notifyAdded.push(id);
+                pushEvent(task, "assigned", `assigned a member to this task`, { userId: id }, userId);
             });
             removed.forEach(id => {
-                historyEntries.push({ user: id, action: "removed", by: req.user.userId });
+                task.assignmentHistory.push({ user: id, action: "removed", by: userId });
                 notifyRemoved.push(id);
+                pushEvent(task, "removed", `removed a member from this task`, { userId: id }, userId);
             });
-
-            rest.assignedTo = newIds;
+            task.assignedTo = newIds;
         }
 
-        const update = { ...rest };
-        if (historyEntries.length) update.$push = { assignmentHistory: { $each: historyEntries } };
+        // Handle QA assignment (admin only)
+        if (qaAssignedTo !== undefined && isAdmin) {
+            const oldQA = task.qaAssignedTo?._id?.toString();
+            const newQA = qaAssignedTo || null;
+            if (String(oldQA) !== String(newQA)) {
+                task.qaAssignedTo = newQA || null;
+                if (newQA) {
+                    pushEvent(task, "qa_assigned", `assigned QA reviewer to this task`, { userId: newQA }, userId);
+                    // Notify all assignees + QA person
+                    const notifyQA = [
+                        newQA,
+                        ...task.assignedTo.map(u => (u._id || u).toString()),
+                    ].filter((id, i, arr) => id !== userId && arr.indexOf(id) === i);
+                    if (notifyQA.length) {
+                        await createNotification({
+                            userId: notifyQA,
+                            title: "QA Assigned",
+                            message: `QA reviewer assigned to "${task.title}"`,
+                            type: "task_comment",
+                            link: `/projects/${task.project}`,
+                            createdBy: userId,
+                            metadata: { taskId: task._id, projectId: task.project },
+                        });
+                    }
+                } else {
+                    pushEvent(task, "qa_assigned", `removed QA reviewer from this task`, {}, userId);
+                }
+            }
+        }
 
-        await Task.findByIdAndUpdate(req.params.id, update);
+        // Handle status change
+        if (status && status !== task.status) {
+            pushEvent(task, "status_change",
+                `changed status from "${STATUS_LABELS[task.status]}" to "${STATUS_LABELS[status]}"`,
+                { from: task.status, to: status }, userId
+            );
+            task.status = status;
+            // Lock chat for assignees when moving to QA
+            if (status === "qa") task.commentAllowedUsers = [];
+        }
 
-        // Send notifications
+        // Handle qaStatus change — auto-advance or revert
+        if (qaStatus && qaStatus !== task.qaStatus) {
+            if (qaStatus === "pass") {
+                pushEvent(task, "qa_result", `marked QA as PASS — task moved to Admin Review`, { result: "pass" }, userId);
+                task.qaStatus = "pass";
+                task.status = "admin_review";
+                pushEvent(task, "status_change",
+                    `changed status from "QA" to "Admin Review"`,
+                    { from: "qa", to: "admin_review" }, userId
+                );
+            } else if (qaStatus === "fail") {
+                pushEvent(task, "qa_result", `marked QA as FAIL — task sent back to In Progress`, { result: "fail" }, userId);
+                task.qaStatus = "pending";
+                task.status = "in_progress";
+                // Re-grant comment access to original assignees
+                task.commentAllowedUsers = task.assignedTo.map(u => (u._id || u).toString());
+                pushEvent(task, "status_change",
+                    `changed status from "QA" to "In Progress" (QA Failed)`,
+                    { from: "qa", to: "in_progress", qaFail: true }, userId
+                );
+                // Notify assignees of QA fail
+                const failNotify = task.assignedTo.map(u => (u._id || u).toString()).filter(id => id !== userId);
+                if (failNotify.length) {
+                    await createNotification({
+                        userId: failNotify,
+                        title: "QA Failed",
+                        message: `QA failed for "${task.title}" — task returned to In Progress`,
+                        type: "task_comment",
+                        link: `/projects/${task.project}`,
+                        createdBy: userId,
+                        metadata: { taskId: task._id, projectId: task.project },
+                    });
+                }
+            } else {
+                task.qaStatus = qaStatus;
+                pushEvent(task, "qa_result", `reset QA status`, { result: qaStatus }, userId);
+            }
+        }
+
+        // Handle linkedBundles change
+        if (linkedBundles !== undefined) {
+            const newLinked = Array.isArray(linkedBundles) ? linkedBundles : [linkedBundles];
+            const oldLinked = task.linkedBundles.map(String);
+            const addedBundles = newLinked.filter(id => !oldLinked.includes(String(id)));
+            const removedBundles = oldLinked.filter(id => !newLinked.map(String).includes(id));
+            addedBundles.forEach(id => pushEvent(task, "bundle_linked", `linked a bundle to this task`, { bundleId: id }, userId));
+            removedBundles.forEach(id => pushEvent(task, "bundle_linked", `unlinked a bundle from this task`, { bundleId: id, removed: true }, userId));
+            task.linkedBundles = newLinked;
+        }
+
+        Object.assign(task, rest);
+        await task.save();
+
         if (notifyAdded.length) {
             await createNotification({
                 userId: notifyAdded,
@@ -129,7 +253,7 @@ export const updateTask = async (req, res) => {
                 message: `You have been assigned to "${task.title}"`,
                 type: "task_comment",
                 link: `/projects/${task.project}`,
-                createdBy: req.user.userId,
+                createdBy: userId,
                 metadata: { taskId: task._id, projectId: task.project },
             });
         }
@@ -140,7 +264,7 @@ export const updateTask = async (req, res) => {
                 message: `You have been removed from "${task.title}"`,
                 type: "task_comment",
                 link: `/projects/${task.project}`,
-                createdBy: req.user.userId,
+                createdBy: userId,
                 metadata: { taskId: task._id, projectId: task.project },
             });
         }
@@ -164,23 +288,41 @@ export const deleteTask = async (req, res) => {
 export const addComment = async (req, res) => {
     try {
         const { text } = req.body;
+        const task = await Task.findById(req.params.id)
+            .populate("assignedTo", "_id")
+            .populate("createdBy", "_id")
+            .populate("project", "_id");
+        if (!task) return res.status(404).json({ success: false, message: "Task not found" });
+
+        const userId = req.user.userId;
+        const isAdmin = req.user.role === "super_admin" || (req.user.permissions || []).some(p =>
+            ["CREATE_TASK", "UPDATE_TASK"].includes(p)
+        );
+        const isAssigned = task.assignedTo.some(u => u._id.toString() === userId);
+        const isQA = task.qaAssignedTo?.toString() === userId;
+        const isAllowed = task.commentAllowedUsers.some(u => (u._id || u).toString() === userId);
+        const isCreator = task.createdBy._id.toString() === userId;
+
+        if (!isAdmin && !isAssigned && !isQA && !isAllowed && !isCreator)
+            return res.status(403).json({ success: false, message: "You no longer have write access to this task" });
+
         const uploaded = await uploadManyToCloudinary(req.files || []);
         const attachments = uploaded.map(f => ({
             name: f.name, url: f.url, publicId: f.publicId,
-            type: f.resourceType, uploadedBy: req.user.userId,
+            type: f.resourceType, uploadedBy: userId,
         }));
 
-        const task = await Task.findByIdAndUpdate(
+        await Task.findByIdAndUpdate(
             req.params.id,
-            { $push: { comments: { text, attachments, author: req.user.userId } } },
+            { $push: { comments: { text, attachments, author: userId } } },
             { new: true }
-        ).populate("assignedTo", "_id").populate("createdBy", "_id").populate("project", "_id");
+        );
 
-        // Notify all assigned users + task creator (except commenter)
         const recipients = [
             ...task.assignedTo.map(u => u._id.toString()),
             task.createdBy._id.toString(),
-        ].filter((id, i, arr) => id !== req.user.userId && arr.indexOf(id) === i);
+            ...(task.qaAssignedTo ? [task.qaAssignedTo.toString()] : []),
+        ].filter((id, i, arr) => id !== userId && arr.indexOf(id) === i);
 
         if (recipients.length) {
             await createNotification({
@@ -189,7 +331,7 @@ export const addComment = async (req, res) => {
                 message: `${text ? text.slice(0, 80) : "A file was attached"} — on task "${task.title}"`,
                 type: "task_comment",
                 link: `/projects/${task.project._id}`,
-                createdBy: req.user.userId,
+                createdBy: userId,
                 metadata: { taskId: task._id, projectId: task.project._id },
             });
         }
@@ -215,7 +357,6 @@ export const deleteComment = async (req, res) => {
         if (!isAuthor && !isAdmin)
             return res.status(403).json({ success: false, message: "Not allowed" });
 
-        // Delete comment attachments from cloudinary
         for (const att of comment.attachments) {
             if (att.publicId) await cloudinary.uploader.destroy(att.publicId, { resource_type: att.type || "raw" }).catch(() => {});
         }
@@ -265,6 +406,26 @@ export const deleteAttachment = async (req, res) => {
     }
 };
 
+export const grantCommentAccess = async (req, res) => {
+    try {
+        const { userIds } = req.body;
+        const isAdmin = req.user.role === "super_admin" || (req.user.permissions || []).some(p =>
+            ["CREATE_TASK", "UPDATE_TASK"].includes(p)
+        );
+        if (!isAdmin) return res.status(403).json({ success: false, message: "Admin only" });
+        const task = await Task.findByIdAndUpdate(
+            req.params.id,
+            { commentAllowedUsers: userIds || [] },
+            { new: true }
+        );
+        if (!task) return res.status(404).json({ success: false, message: "Task not found" });
+        const populated = await populateTask(Task.findById(task._id));
+        res.json({ success: true, data: populated });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
 export const getMyTaskHistory = async (req, res) => {
     try {
         const userId = req.user.userId;
@@ -277,7 +438,6 @@ export const getMyTaskHistory = async (req, res) => {
         .sort({ updatedAt: -1 })
         .limit(20);
 
-        // Return only this user's history entries per task
         const result = tasks.map(t => ({
             _id: t._id,
             title: t.title,
