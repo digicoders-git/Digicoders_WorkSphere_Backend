@@ -103,6 +103,10 @@ export const updateProject = async (req, res) => {
 
 export const deleteProject = async (req, res) => {
     try {
+        const canDelete = req.user.role === "super_admin" ||
+            (req.user.permissions || []).includes("DELETE_PROJECT");
+        if (!canDelete) return res.status(403).json({ success: false, message: "Permission denied" });
+
         await Project.findByIdAndUpdate(req.params.id, { isDeleted: true });
         await Task.updateMany({ project: req.params.id }, { isDeleted: true });
         res.json({ success: true, message: "Project deleted" });

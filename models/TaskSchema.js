@@ -38,6 +38,8 @@ const TaskSchema = new mongoose.Schema({
     dueDate: { type: Date },
     linkedBundles: [{ type: mongoose.Schema.Types.ObjectId }],
     qaAssignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    workStarted: { type: Boolean, default: false },
+    qaStarted: { type: Boolean, default: false },
     commentAllowedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     attachments: [AttachmentSchema],
     comments: [CommentSchema],

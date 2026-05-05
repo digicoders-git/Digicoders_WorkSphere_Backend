@@ -6,7 +6,7 @@ import {
     updateTask, deleteTask,
     addComment, deleteComment,
     addAttachment, deleteAttachment,
-    getMyTaskHistory, grantCommentAccess,
+    getMyTaskHistory, grantCommentAccess, startWork,
 } from "../controller/TaskController.js";
 
 const router = express.Router();
@@ -17,6 +17,7 @@ router.get("/my-history", getMyTaskHistory);
 router.get("/project/:projectId", getTasksByProject);
 router.get("/:id", getTaskById);
 router.put("/:id", updateTask);
+router.patch("/:id/start", startWork);
 router.delete("/:id", deleteTask);
 router.patch("/:id/comment-access", grantCommentAccess);
 

@@ -150,6 +150,8 @@ export const updateTask = async (req, res) => {
                 pushEvent(task, "removed", `removed a member from this task`, { userId: id }, userId);
             });
             task.assignedTo = newIds;
+            // Reset workStarted so new assignee must click Start Work
+            if (added.length) task.workStarted = false;
         }
 
         // Handle QA assignment (admin only)
@@ -158,6 +160,7 @@ export const updateTask = async (req, res) => {
             const newQA = qaAssignedTo || null;
             if (String(oldQA) !== String(newQA)) {
                 task.qaAssignedTo = newQA || null;
+                task.qaStarted = false; // Reset so new QA must click Start Work
                 if (newQA) {
                     pushEvent(task, "qa_assigned", `assigned QA reviewer to this task`, { userId: newQA }, userId);
                     // Notify all assignees + QA person
@@ -184,10 +187,33 @@ export const updateTask = async (req, res) => {
 
         // Handle status change
         if (status && status !== task.status) {
-            pushEvent(task, "status_change",
-                `changed status from "${STATUS_LABELS[task.status]}" to "${STATUS_LABELS[status]}"`,
-                { from: task.status, to: status }, userId
-            );
+            // Admin sending back from admin_review to in_progress
+            if (status === "in_progress" && task.status === "admin_review" && isAdmin) {
+                task.workStarted = false; // Reset so dev must restart
+                task.commentAllowedUsers = task.assignedTo.map(u => (u._id || u).toString());
+                pushEvent(task, "status_change",
+                    `sent task back to In Progress for rework`,
+                    { from: task.status, to: status }, userId
+                );
+                // Notify assignees
+                const notifyDevs = task.assignedTo.map(u => (u._id || u).toString()).filter(id => id !== userId);
+                if (notifyDevs.length) {
+                    await createNotification({
+                        userId: notifyDevs,
+                        title: "Task Sent Back",
+                        message: `Admin sent "${task.title}" back to In Progress for rework`,
+                        type: "task_comment",
+                        link: `/projects/${task.project}`,
+                        createdBy: userId,
+                        metadata: { taskId: task._id, projectId: task.project },
+                    });
+                }
+            } else {
+                pushEvent(task, "status_change",
+                    `changed status from "${STATUS_LABELS[task.status]}" to "${STATUS_LABELS[status]}"`,
+                    { from: task.status, to: status }, userId
+                );
+            }
             task.status = status;
             // Lock chat for assignees when moving to QA
             if (status === "qa") task.commentAllowedUsers = [];
@@ -207,6 +233,7 @@ export const updateTask = async (req, res) => {
                 pushEvent(task, "qa_result", `marked QA as FAIL — task sent back to In Progress`, { result: "fail" }, userId);
                 task.qaStatus = "pending";
                 task.status = "in_progress";
+                task.workStarted = false; // Dev must start work again
                 // Re-grant comment access to original assignees
                 task.commentAllowedUsers = task.assignedTo.map(u => (u._id || u).toString());
                 pushEvent(task, "status_change",
@@ -276,8 +303,45 @@ export const updateTask = async (req, res) => {
     }
 };
 
+// Assigned user starts work (todo→in_progress) or QA starts review
+export const startWork = async (req, res) => {
+    try {
+        const task = await Task.findOne({ _id: req.params.id, isDeleted: false });
+        if (!task) return res.status(404).json({ success: false, message: "Task not found" });
+
+        const userId = req.user.userId;
+        const isAssigned = task.assignedTo.some(u => u.toString() === userId);
+        const isQA = task.qaAssignedTo?.toString() === userId;
+
+        if (task.status === "todo" && isAssigned) {
+            task.status = "in_progress";
+            task.workStarted = true;
+            pushEvent(task, "status_change", `started work — status changed from "To Do" to "In Progress"`, { from: "todo", to: "in_progress" }, userId);
+        } else if (task.status === "in_progress" && isAssigned && !task.workStarted) {
+            // Allow restart after QA fail
+            task.workStarted = true;
+            pushEvent(task, "status_change", `restarted work after QA feedback`, {}, userId);
+        } else if (task.status === "qa" && isQA) {
+            task.qaStarted = true;
+            pushEvent(task, "status_change", `started QA review`, {}, userId);
+        } else {
+            return res.status(403).json({ success: false, message: "Not allowed to start work on this task" });
+        }
+
+        await task.save();
+        const populated = await populateTask(Task.findById(task._id));
+        res.json({ success: true, data: populated });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
 export const deleteTask = async (req, res) => {
     try {
+        const canDelete = req.user.role === "super_admin" ||
+            (req.user.permissions || []).includes("DELETE_TASK");
+        if (!canDelete) return res.status(403).json({ success: false, message: "Permission denied" });
+
         await Task.findByIdAndUpdate(req.params.id, { isDeleted: true });
         res.json({ success: true, message: "Task deleted" });
     } catch (err) {
