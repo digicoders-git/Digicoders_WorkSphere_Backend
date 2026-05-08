@@ -18,6 +18,7 @@ import RegularizationRoute from './route/RegularizationRoute.js'
 import PayrollRoute from './route/PayrollRoute.js'
 import ProjectRoute from './route/ProjectRoute.js'
 import TaskRoute from './route/TaskRoute.js'
+import LeadRoute from './route/LeadRoute.js'
 import cookieParser from 'cookie-parser'
 import { startScheduler } from './utills/scheduler.js'
 
@@ -56,6 +57,7 @@ app.use('/api/regularization', RegularizationRoute);
 app.use('/api/payroll', PayrollRoute);
 app.use('/api/projects', ProjectRoute);
 app.use('/api/tasks', TaskRoute);
+app.use('/api/leads', LeadRoute);
 
 app.get('/', (req, res) => {
     res.send("API is running")

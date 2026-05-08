@@ -89,4 +89,11 @@ export const permission = {
         VIEW_TASK: "VIEW_TASK",
         VIEW_ALL_TASKS: "VIEW_ALL_TASKS",
     },
+    Lead: {
+        CREATE_LEAD: "CREATE_LEAD",
+        UPDATE_LEAD: "UPDATE_LEAD",
+        DELETE_LEAD: "DELETE_LEAD",
+        VIEW_LEAD: "VIEW_LEAD",
+        VIEW_ALL_LEADS: "VIEW_ALL_LEADS",
+    },
 };
