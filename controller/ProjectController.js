@@ -145,7 +145,7 @@ export const createFileBundle = async (req, res) => {
         const pub = isPublic === "false" || isPublic === false ? false : true;
         const shared = sharedWith
             ? (Array.isArray(sharedWith) ? sharedWith : JSON.parse(sharedWith)).map(s =>
-                typeof s === "object" ? s : { user: s, permission: "read" }
+                typeof s === "object" ? s : { user: s, permission: "read_write" }
               )
             : [];
 
@@ -164,7 +164,7 @@ export const createFileBundle = async (req, res) => {
         const bundle = {
             name,
             isPublic: pub,
-            publicPermission: publicPermission || "read",
+            publicPermission: publicPermission || "read_write",
             sharedWith: shared,
             uploadedBy: req.user.userId,
             links: parsedLinks.filter(l => l.url?.trim()),
@@ -251,7 +251,7 @@ export const updateFileBundle = async (req, res) => {
             if (publicPermission !== undefined) bundle.publicPermission = publicPermission;
             if (sharedWith !== undefined) {
                 const parsed = typeof sharedWith === "string" ? JSON.parse(sharedWith) : sharedWith;
-                bundle.sharedWith = parsed.map(s => typeof s === "object" ? s : { user: s, permission: "read" });
+                bundle.sharedWith = parsed.map(s => typeof s === "object" ? s : { user: s, permission: "read_write" });
             }
         }
 
@@ -307,7 +307,7 @@ export const updateBundleAccess = async (req, res) => {
         if (!bundle) return res.status(404).json({ success: false, message: "Bundle not found" });
 
         if (sharedWith !== undefined)
-            bundle.sharedWith = sharedWith.map(s => typeof s === "object" ? s : { user: s, permission: "read" });
+            bundle.sharedWith = sharedWith.map(s => typeof s === "object" ? s : { user: s, permission: "read_write" });
         if (isPublic !== undefined) bundle.isPublic = isPublic;
         if (publicPermission !== undefined) bundle.publicPermission = publicPermission;
         bundle.editLog.push({ action: "Access updated", by: userId });

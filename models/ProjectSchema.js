@@ -10,10 +10,10 @@ const FileBundleSchema = new mongoose.Schema({
     name: { type: String, required: true },
     uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     isPublic: { type: Boolean, default: true },
-    publicPermission: { type: String, enum: ["read", "read_write"], default: "read" },
+    publicPermission: { type: String, enum: ["read", "read_write"], default: "read_write" },
     sharedWith: [{
         user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-        permission: { type: String, enum: ["read", "read_write"], default: "read" },
+        permission: { type: String, enum: ["read", "read_write"], default: "read_write" },
     }],
     links: [{
         title: { type: String },
