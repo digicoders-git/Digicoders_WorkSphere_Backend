@@ -27,23 +27,17 @@ export const getLeads = async (req, res) => {
         if (status)     filter.status     = status;
         if (assignedTo) filter.assignedTo = assignedTo;
 
-        // Run find + estimatedCount in parallel.
-        // Use estimatedDocumentCount when no filter (instant), countDocuments only when filtered.
-        const isFiltered = search || status || assignedTo;
         const [leads, total] = await Promise.all([
             Lead.find(filter, {
-                // project only what the table needs — skip heavy embedded arrays
                 contactNumber: 1, orgName: 1, contactPerson: 1,
                 cellNumber: 1, status: 1, assignedTo: 1, createdAt: 1,
             })
-                .populate("assignedTo", "firstName lastName")  // single populate, only used field
+                .populate("assignedTo", "firstName lastName")
                 .sort({ createdAt: -1 })
                 .skip(skip)
                 .limit(lim)
                 .lean(),
-            isFiltered
-                ? Lead.countDocuments(filter)
-                : Lead.estimatedDocumentCount(),
+            Lead.countDocuments(filter),
         ]);
 
         res.json({ leads, total, page: Number(page), limit: lim, success: true });
@@ -330,6 +324,92 @@ export const importLeads = async (req, res) => {
             inserted, skipped, failed,
             errors,   // all errors — frontend decides how to display/download
         });
+    } catch (err) {
+        res.status(500).json({ message: err.message, success: false });
+    }
+};
+
+// ── POST /api/leads/import/batch ──────────────────────────────────────────────
+// Body: { rows: [...] }  max 500 rows per call, 2 concurrent calls from client.
+export const importBatch = async (req, res) => {
+    try {
+        const { rows } = req.body;
+        if (!Array.isArray(rows) || !rows.length)
+            return res.status(400).json({ message: "rows array is required", success: false });
+        if (rows.length > 500)
+            return res.status(400).json({ message: "Max 500 rows per batch", success: false });
+
+        const companyId = cid(req);
+        const createdBy = req.user.userId;
+        const now       = new Date();
+
+        const VALID_STATUSES = ["New Lead", "Contacted", "Meeting Scheduled", "Proposal Sent",
+            "Sent to Project Team", "Project Done", "On Hold", "Cancelled"];
+
+        const ops     = [];
+        const commMap = {};
+
+        for (const row of rows) {
+            const contactNumber = (row.contactNumber || "").replace(/\D/g, "").slice(-10);
+            const orgName       = (row.orgName || "").trim();
+            if (!contactNumber || contactNumber.length !== 10 || !orgName) continue;
+
+            const status   = VALID_STATUSES.includes(row.status) ? row.status : "New Lead";
+            const commText = (row.communication || "").trim();
+            if (commText) commMap[contactNumber] = commText;
+
+            ops.push({
+                updateOne: {
+                    filter: { companyId, contactNumber },
+                    update: {
+                        $setOnInsert: {
+                            companyId, contactNumber, orgName,
+                            address:       row.address       || undefined,
+                            contactPerson: row.contactPerson || undefined,
+                            designation:   row.designation   || undefined,
+                            cellNumber:    (row.cellNumber || "").replace(/\D/g, "").slice(-10) || undefined,
+                            email:         row.email?.toLowerCase() || undefined,
+                            rooms:         row.rooms         || undefined,
+                            extra:         row.extra         || undefined,
+                            status, createdBy,
+                        },
+                    },
+                    upsert: true,
+                },
+            });
+        }
+
+        if (!ops.length) return res.json({ inserted: 0, skipped: 0, success: true });
+
+        const result = await Lead.bulkWrite(ops, { ordered: false });
+
+        const newNums = Object.keys(result.upsertedIds || {})
+            .map(idx => ops[Number(idx)]?.updateOne?.filter?.contactNumber)
+            .filter(Boolean);
+
+        const commOps = newNums
+            .filter(n => commMap[n])
+            .map(contactNumber => ({
+                updateOne: {
+                    filter: { companyId, contactNumber },
+                    update: {
+                        $push: {
+                            communications: {
+                                subject: "Imported Note", description: commMap[contactNumber],
+                                addedBy: createdBy, addedAt: now,
+                            },
+                            history: {
+                                changedBy: createdBy, changedAt: now,
+                                changes: { communication: { from: null, to: "Added: \"Imported Note\"" } },
+                            },
+                        },
+                    },
+                },
+            }));
+
+        if (commOps.length) await Lead.bulkWrite(commOps, { ordered: false });
+
+        res.json({ inserted: result.upsertedCount, skipped: result.matchedCount, success: true });
     } catch (err) {
         res.status(500).json({ message: err.message, success: false });
     }
