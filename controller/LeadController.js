@@ -1,45 +1,52 @@
 import Lead from "../models/LeadSchema.js";
-import User from "../models/UserSchema.js";
+import { parse } from "csv-parse/sync";
 
-const getReqUser = (userId) =>
-    User.findById(userId).select("companyId role").populate("role", "name");
+// companyId comes from JWT — no extra DB call needed
+const cid = (req) => req.user.company;
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-const TRACKED = ["contactNumber","orgName","address","contactPerson","designation","cellNumber","email","status","assignedTo"];
-
-const buildChanges = (old, body) => {
-    const changes = {};
-    for (const key of TRACKED) {
-        if (body[key] === undefined) continue;
-        const oldVal = old[key]?.toString?.() ?? old[key];
-        const newVal = body[key]?.toString?.() ?? body[key];
-        if (oldVal !== newVal) changes[key] = { from: oldVal ?? null, to: newVal };
-    }
-    return changes;
-};
-
-// ── GET /api/leads?search=&status=&assignedTo=&page=&limit= ───────────────────
+// ── GET /api/leads?search=&status=&assignedTo=&page=1&limit=20 ────────────────
 export const getLeads = async (req, res) => {
     try {
-        const reqUser = await getReqUser(req.user.userId);
         const { search, status, assignedTo, page = 1, limit = 20 } = req.query;
+        const skip = (Number(page) - 1) * Number(limit);
+        const lim  = Math.min(Number(limit), 100); // hard cap — never return more than 100
 
-        const filter = { companyId: reqUser.companyId };
-        if (search?.trim()) filter.contactNumber = { $regex: search.trim(), $options: "i" };
+        const filter = { companyId: cid(req) };
+
+        if (search?.trim()) {
+            const s = search.trim();
+            if (/^\d+$/.test(s)) {
+                // digits-only → anchored prefix on indexed contactNumber field
+                filter.contactNumber = { $regex: `^${s}` };
+            } else {
+                // text → use text index; status filter applied as post-match
+                filter.$text = { $search: s };
+            }
+        }
+
         if (status)     filter.status     = status;
         if (assignedTo) filter.assignedTo = assignedTo;
 
+        // Run find + estimatedCount in parallel.
+        // Use estimatedDocumentCount when no filter (instant), countDocuments only when filtered.
+        const isFiltered = search || status || assignedTo;
         const [leads, total] = await Promise.all([
-            Lead.find(filter)
-                .populate("assignedTo", "firstName lastName employeeCode profilePic")
-                .populate("createdBy",  "firstName lastName")
+            Lead.find(filter, {
+                // project only what the table needs — skip heavy embedded arrays
+                contactNumber: 1, orgName: 1, contactPerson: 1,
+                cellNumber: 1, status: 1, assignedTo: 1, createdAt: 1,
+            })
+                .populate("assignedTo", "firstName lastName")  // single populate, only used field
                 .sort({ createdAt: -1 })
-                .skip((page - 1) * limit)
-                .limit(Number(limit)),
-            Lead.countDocuments(filter),
+                .skip(skip)
+                .limit(lim)
+                .lean(),
+            isFiltered
+                ? Lead.countDocuments(filter)
+                : Lead.estimatedDocumentCount(),
         ]);
 
-        res.json({ leads, total, success: true });
+        res.json({ leads, total, page: Number(page), limit: lim, success: true });
     } catch (err) {
         res.status(500).json({ message: err.message, success: false });
     }
@@ -48,12 +55,13 @@ export const getLeads = async (req, res) => {
 // ── GET /api/leads/:id ────────────────────────────────────────────────────────
 export const getLeadById = async (req, res) => {
     try {
-        const lead = await Lead.findById(req.params.id)
+        const lead = await Lead.findOne({ _id: req.params.id, companyId: cid(req) })
             .populate("assignedTo", "firstName lastName employeeCode profilePic")
             .populate("createdBy",  "firstName lastName")
             .populate("updatedBy",  "firstName lastName")
-            .populate("history.changedBy", "firstName lastName")
-            .populate("communications.addedBy", "firstName lastName");
+            .populate("history.changedBy",       "firstName lastName")
+            .populate("communications.addedBy",  "firstName lastName")
+            .lean();
 
         if (!lead) return res.status(404).json({ message: "Lead not found", success: false });
         res.json({ lead, success: true });
@@ -65,24 +73,29 @@ export const getLeadById = async (req, res) => {
 // ── POST /api/leads ───────────────────────────────────────────────────────────
 export const createLead = async (req, res) => {
     try {
-        const reqUser = await getReqUser(req.user.userId);
-        const { contactNumber, orgName, address, contactPerson, designation, cellNumber, email, status, assignedTo } = req.body;
+        const { contactNumber, orgName, address, contactPerson, designation,
+                cellNumber, email, rooms, extra, status, assignedTo } = req.body;
 
         if (!contactNumber?.trim() || !orgName?.trim())
             return res.status(400).json({ message: "contactNumber and orgName are required", success: false });
 
         const lead = await Lead.create({
-            companyId: reqUser.companyId,
+            companyId:     cid(req),
             contactNumber: contactNumber.trim(),
-            orgName: orgName.trim(),
-            address, contactPerson, designation, cellNumber, email,
-            status: status || "New Lead",
-            assignedTo: assignedTo || null,
-            createdBy: req.user.userId,
+            orgName:       orgName.trim(),
+            address, contactPerson, designation, cellNumber,
+            email:         email?.toLowerCase?.() || email,
+            rooms, extra,
+            status:        status || "New Lead",
+            assignedTo:    assignedTo || null,
+            createdBy:     req.user.userId,
         });
 
         res.status(201).json({ lead, message: "Lead created", success: true });
     } catch (err) {
+        // duplicate contactNumber for same company
+        if (err.code === 11000)
+            return res.status(409).json({ message: "A lead with this contact number already exists", success: false });
         res.status(500).json({ message: err.message, success: false });
     }
 };
@@ -90,22 +103,41 @@ export const createLead = async (req, res) => {
 // ── PATCH /api/leads/:id ──────────────────────────────────────────────────────
 export const updateLead = async (req, res) => {
     try {
-        const lead = await Lead.findById(req.params.id);
-        if (!lead) return res.status(404).json({ message: "Lead not found", success: false });
+        const FIELDS = ["contactNumber", "orgName", "address", "contactPerson",
+                        "designation", "cellNumber", "email", "rooms", "extra", "status", "assignedTo"];
 
-        const changes = buildChanges(lead, req.body);
+        // Build $set only for fields explicitly present in body (null/"" are valid — clears the field)
+        const $set = { updatedBy: req.user.userId };
+        FIELDS.forEach(f => { if (req.body[f] !== undefined) $set[f] = req.body[f] ?? ""; });
 
-        const fields = ["contactNumber","orgName","address","contactPerson","designation","cellNumber","email","status","assignedTo"];
-        fields.forEach(f => { if (req.body[f] !== undefined) lead[f] = req.body[f]; });
-        lead.updatedBy = req.user.userId;
+        // Read current doc lean (cheap) to build history diff
+        const current = await Lead.findOne({ _id: req.params.id, companyId: cid(req) }).lean();
+        if (!current) return res.status(404).json({ message: "Lead not found", success: false });
 
+        const changes = {};
+        FIELDS.forEach(f => {
+            if ($set[f] === undefined) return;
+            const oldVal = current[f]?.toString?.() ?? current[f] ?? null;
+            const newVal = $set[f]?.toString?.() ?? $set[f];
+            if (oldVal !== newVal) changes[f] = { from: oldVal, to: newVal };
+        });
+
+        const update = { $set };
         if (Object.keys(changes).length) {
-            lead.history.push({ changedBy: req.user.userId, changedAt: new Date(), changes });
+            update.$push = {
+                history: { changedBy: req.user.userId, changedAt: new Date(), changes },
+            };
         }
 
-        await lead.save();
+        // Atomic update — no race condition
+        const lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true })
+            .populate("assignedTo", "firstName lastName")
+            .lean();
+
         res.json({ lead, message: "Lead updated", success: true });
     } catch (err) {
+        if (err.code === 11000)
+            return res.status(409).json({ message: "Contact number already used by another lead", success: false });
         res.status(500).json({ message: err.message, success: false });
     }
 };
@@ -113,16 +145,15 @@ export const updateLead = async (req, res) => {
 // ── DELETE /api/leads/:id ─────────────────────────────────────────────────────
 export const deleteLead = async (req, res) => {
     try {
-        const lead = await Lead.findById(req.params.id);
+        const lead = await Lead.findOne({ _id: req.params.id, companyId: cid(req) }).lean();
         if (!lead) return res.status(404).json({ message: "Lead not found", success: false });
 
-        const reqUser = await getReqUser(req.user.userId);
         const isOwner = lead.createdBy?.toString() === req.user.userId;
-        const isAdmin = ["admin", "super_admin"].includes(reqUser.role?.name);
+        const isAdmin = ["admin", "super_admin"].includes(req.user.role);
         if (!isOwner && !isAdmin)
             return res.status(403).json({ message: "Not allowed", success: false });
 
-        await lead.deleteOne();
+        await Lead.deleteOne({ _id: req.params.id });
         res.json({ message: "Lead deleted", success: true });
     } catch (err) {
         res.status(500).json({ message: err.message, success: false });
@@ -133,24 +164,172 @@ export const deleteLead = async (req, res) => {
 export const addCommunication = async (req, res) => {
     try {
         const { subject, description } = req.body;
-        if (!subject?.trim() || !description?.trim())
-            return res.status(400).json({ message: "subject and description are required", success: false });
+        if (!description?.trim())
+            return res.status(400).json({ message: "description is required", success: false });
 
-        const lead = await Lead.findById(req.params.id);
-        if (!lead) return res.status(404).json({ message: "Lead not found", success: false });
+        const comm = {
+            subject:     subject?.trim() || "Note",
+            description: description.trim(),
+            addedBy:     req.user.userId,
+            addedAt:     new Date(),
+        };
 
-        lead.communications.push({ subject: subject.trim(), description: description.trim(), addedBy: req.user.userId });
-        lead.history.push({
+        const histEntry = {
             changedBy: req.user.userId,
             changedAt: new Date(),
-            changes: { communication: { from: null, to: `Added: "${subject.trim()}"` } },
-        });
-        await lead.save();
+            changes:   { communication: { from: null, to: `Added: "${comm.subject}"` } },
+        };
 
-        // Populate the newly added communication's addedBy
-        await lead.populate("communications.addedBy", "firstName lastName");
-        const comm = lead.communications[lead.communications.length - 1];
-        res.status(201).json({ communication: comm, message: "Communication added", success: true });
+        // Atomic $push — safe for 70 concurrent users on same lead
+        const lead = await Lead.findOneAndUpdate(
+            { _id: req.params.id, companyId: cid(req) },
+            { $push: { communications: comm, history: histEntry } },
+            { new: true }
+        ).populate("communications.addedBy", "firstName lastName").lean();
+
+        if (!lead) return res.status(404).json({ message: "Lead not found", success: false });
+
+        const added = lead.communications[lead.communications.length - 1];
+        res.status(201).json({ communication: added, message: "Communication added", success: true });
+    } catch (err) {
+        res.status(500).json({ message: err.message, success: false });
+    }
+};
+
+// ── POST /api/leads/import/csv ────────────────────────────────────────────────
+// Columns: contactNumber*, orgName*, address, contactPerson, designation,
+//          cellNumber, email, rooms, extra, status, communication
+// communication column = description text for one initial communication entry.
+// Duplicate contactNumbers are skipped (not overwritten).
+export const importLeads = async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ message: "No file uploaded", success: false });
+
+        const content = req.file.buffer.toString("utf8");
+
+        let rows;
+        try {
+            rows = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
+        } catch {
+            return res.status(400).json({ message: "Invalid CSV format", success: false });
+        }
+
+        if (!rows.length) return res.status(400).json({ message: "CSV is empty", success: false });
+
+        const normalise = (row) => {
+            const n = {};
+            for (const k of Object.keys(row)) n[k.toLowerCase().replace(/\s+/g, "")] = row[k];
+            return n;
+        };
+
+        const VALID_STATUSES = ["New Lead", "Contacted", "Meeting Scheduled", "Proposal Sent",
+            "Sent to Project Team", "Project Done", "On Hold", "Cancelled"];
+
+        const companyId = cid(req);
+        const createdBy = req.user.userId;
+        const now       = new Date();
+
+        let inserted = 0, skipped = 0, failed = 0;
+        const errors = [];
+
+        const BATCH = 500;
+        for (let i = 0; i < rows.length; i += BATCH) {
+            const batch = rows.slice(i, i + BATCH).map(normalise);
+
+            // ── build bulkWrite ops ──────────────────────────────────────────
+            const ops        = [];   // bulkWrite operations
+            const commMap    = {};   // contactNumber → communication text (only for new inserts)
+
+            for (const row of batch) {
+                const contactNumber = (row.contactnumber || row.contact_number || "").replace(/\D/g, "").slice(-10);
+                const orgName       = (row.orgname || row.org_name || row.organisation || row.company || "").trim();
+
+                if (!contactNumber || contactNumber.length !== 10) {
+                    failed++;
+                    errors.push(`Row ${i + ops.length + failed + 1}: invalid contactNumber "${row.contactnumber || ""}"`);
+                    continue;
+                }
+                if (!orgName) {
+                    failed++;
+                    errors.push(`Row ${i + ops.length + failed + 1}: orgName is required`);
+                    continue;
+                }
+
+                const status      = VALID_STATUSES.includes(row.status) ? row.status : "New Lead";
+                const commText    = (row.communication || row.note || row.notes || "").trim();
+
+                if (commText) commMap[contactNumber] = commText;
+
+                ops.push({
+                    updateOne: {
+                        filter: { companyId, contactNumber },
+                        update: {
+                            $setOnInsert: {
+                                companyId, contactNumber, orgName,
+                                address:       row.address                                          || undefined,
+                                contactPerson: row.contactperson || row.contact_person              || undefined,
+                                designation:   row.designation                                      || undefined,
+                                cellNumber:    (row.cellnumber || row.cell_number || "").replace(/\D/g, "").slice(-10) || undefined,
+                                email:         row.email?.toLowerCase()                             || undefined,
+                                rooms:         row.rooms                                            || undefined,
+                                extra:         row.extra                                            || undefined,
+                                status,
+                                createdBy,
+                            },
+                        },
+                        upsert: true,
+                    },
+                });
+            }
+
+            if (!ops.length) continue;
+
+            const result = await Lead.bulkWrite(ops, { ordered: false });
+            inserted += result.upsertedCount;
+            skipped  += result.matchedCount;
+
+            // ── push communications for newly inserted leads ─────────────────
+            const newContactNumbers = Object.keys(result.upsertedIds || {}).map(idx => {
+                // upsertedIds keys are the op index — get contactNumber from ops[idx]
+                const filter = ops[Number(idx)]?.updateOne?.filter;
+                return filter?.contactNumber;
+            }).filter(Boolean);
+
+            const commOps = [];
+            for (const contactNumber of newContactNumbers) {
+                const text = commMap[contactNumber];
+                if (!text) continue;
+                commOps.push({
+                    updateOne: {
+                        filter: { companyId, contactNumber },
+                        update: {
+                            $push: {
+                                communications: {
+                                    subject:     "Imported Note",
+                                    description: text,
+                                    addedBy:     createdBy,
+                                    addedAt:     now,
+                                },
+                                history: {
+                                    changedBy: createdBy,
+                                    changedAt: now,
+                                    changes:   { communication: { from: null, to: `Added: "Imported Note"` } },
+                                },
+                            },
+                        },
+                    },
+                });
+            }
+
+            if (commOps.length) await Lead.bulkWrite(commOps, { ordered: false });
+        }
+
+        res.json({
+            success: true,
+            message: `Import complete: ${inserted} inserted, ${skipped} skipped (duplicates), ${failed} failed`,
+            inserted, skipped, failed,
+            errors,   // all errors — frontend decides how to display/download
+        });
     } catch (err) {
         res.status(500).json({ message: err.message, success: false });
     }

@@ -3,7 +3,7 @@ import cloudinary from "../utills/cloudinary.js";
 
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 50 * 1024 * 1024 },
+    limits: { fileSize: 50 * 1024 * 1024 },  // 50 MB — covers large lead CSV files
 });
 
 const getResourceType = (mimetype = "") => {
