@@ -24,7 +24,7 @@ import { startScheduler } from './utills/scheduler.js'
 
 import EnvData from './config/EnvData.js'
 const app= express();
-app.use(express.json())
+app.use(express.json({ limit: "10mb" }))  // raised for lead batch imports (500 rows ~150kb each)
 app.use(cookieParser())
 
 const allowedOrigins = EnvData.CLIENT_URL

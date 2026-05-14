@@ -29,6 +29,10 @@ const CompanySchema = new mongoose.Schema({
     status: {
         type: Boolean,
         default: true
+    },
+    icon: {
+        url:      { type: String },
+        publicId: { type: String },
     }
 }, { timestamps: true })
 

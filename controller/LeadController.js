@@ -27,6 +27,7 @@ export const getLeads = async (req, res) => {
         if (status)     filter.status     = status;
         if (assignedTo) filter.assignedTo = assignedTo;
 
+        const isFiltered = !!(search?.trim() || status || assignedTo);
         const [leads, total] = await Promise.all([
             Lead.find(filter, {
                 contactNumber: 1, orgName: 1, contactPerson: 1,
@@ -37,7 +38,9 @@ export const getLeads = async (req, res) => {
                 .skip(skip)
                 .limit(lim)
                 .lean(),
-            Lead.countDocuments(filter),
+            isFiltered
+                ? Lead.countDocuments(filter)
+                : Lead.estimatedDocumentCount(),
         ]);
 
         res.json({ leads, total, page: Number(page), limit: lim, success: true });
@@ -336,8 +339,6 @@ export const importBatch = async (req, res) => {
         const { rows } = req.body;
         if (!Array.isArray(rows) || !rows.length)
             return res.status(400).json({ message: "rows array is required", success: false });
-        if (rows.length > 500)
-            return res.status(400).json({ message: "Max 500 rows per batch", success: false });
 
         const companyId = cid(req);
         const createdBy = req.user.userId;

@@ -1,4 +1,5 @@
 import User from "../models/UserSchema.js";
+import Company from "../models/CompanySchema.js";
 import bcrypt from "bcryptjs";
 import cloudinary from "../utills/cloudinary.js";
 import { sendMail } from "../utills/SendEmail.js";
@@ -67,6 +68,10 @@ export const loginUser = async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ message: "Invalid credentials", success: false });
         if (!user.isActive) return res.status(403).json({ message: "Your account has been disabled. Please contact your administrator.", success: false, blocked: true });
+        if (user.role?.name !== "super_admin" && user.companyId) {
+            const company = await Company.findById(user.companyId._id).select("status");
+            if (!company || !company.status) return res.status(403).json({ message: "Your company account has been deactivated. Please contact support.", success: false, blocked: true });
+        }
         const token = genrateToken({ userId: user._id, role: user.role.name, company: user?.companyId?._id, permissions: user.role.permissions || [] });
         user.password = undefined;
         const isProd = EnvData.NODE_ENV === "production";
@@ -277,11 +282,14 @@ export const verifyToken = async (req, res) => {
         const user = await User.findById(req.user.userId)
             .select("-password -otp")
             .populate("role", "name permissions")
-            .populate("companyId", "name")
+            .populate("companyId", "name status")
             .populate("workShift", "name startTime endTime")
             .populate("employmentStatus", "name")
             .populate("reportingTo", "firstName lastName employeeCode profilePic");
         if (!user) return res.status(404).json({ message: "User not found", success: false });
+        if (!user.isActive) return res.status(403).json({ message: "Your account has been disabled.", success: false, blocked: true });
+        if (user.role?.name !== "super_admin" && user.companyId && !user.companyId.status)
+            return res.status(403).json({ message: "Your company account has been deactivated.", success: false, blocked: true });
         res.status(200).json({ user, success: true });
     } catch (error) {
         res.status(500).json({ message: "Error verifying token", success: false });

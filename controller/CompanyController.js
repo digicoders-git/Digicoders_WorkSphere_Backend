@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs"
 import { sendMail } from "../utills/SendEmail.js"
 import { userCreatedTemplate } from "../utills/emailTemplates/userTemplate.js"
 import { createNotification } from "../utills/notificationHelper.js"
+import { uploadToCloudinary } from "../middleware/multer.js"
 
 export const createCompany = async (req, res) => {
     try {
@@ -205,6 +206,10 @@ export const updateCompany = async (req, res) => {
         if (!company) {
             return res.status(404).json({ message: "Company not found", success: false })
         }
+        // admin can only update their own company
+        if (req.user.role !== "super_admin" && company._id.toString() !== req.user.company?.toString()) {
+            return res.status(403).json({ message: "Not allowed", success: false })
+        }
         company.name = name || company.name
         company.address = address || company.address
         company.domain = domain || company.domain
@@ -330,3 +335,24 @@ export const toggleCompanyStatus = async (req, res) => {
     }
 };
 
+
+export const uploadCompanyIcon = async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ message: "No file uploaded", success: false });
+
+        const company = await Company.findById(req.params.id);
+        if (!company) return res.status(404).json({ message: "Company not found", success: false });
+
+        if (req.user.role !== "super_admin" && company._id.toString() !== req.user.company?.toString())
+            return res.status(403).json({ message: "Not allowed", success: false });
+
+        const uploaded = await uploadToCloudinary(req.file, "digicoders/hrms/company-icons");
+        company.icon = { url: uploaded.url, publicId: uploaded.publicId };
+        company.updatedBy = req.user.userId;
+        await company.save();
+
+        res.json({ message: "Icon uploaded", company, success: true });
+    } catch (error) {
+        res.status(500).json({ message: "Internal server error", success: false });
+    }
+};

@@ -7,7 +7,7 @@ const router = express.Router();
 
 router.get("/",          protect, getLeads);
 router.post("/",         protect, createLead);
-router.post("/import/batch", protect, importBatch);
+router.post("/import/batch", protect, express.json({ limit: "10mb" }), importBatch);
 router.post("/import/csv", protect, upload.single("file"), (req, res, next) => {
     res.setTimeout(600000);
     next();
