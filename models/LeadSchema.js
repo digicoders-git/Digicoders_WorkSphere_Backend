@@ -33,6 +33,7 @@ const LeadSchema = new mongoose.Schema({
     assignedTo:    { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     createdBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     updatedBy:     { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    customFields:   { type: Map, of: String, default: {} }, // key → value for admin-configured extra fields
     history:        [historySchema],
     communications: [communicationSchema],
 }, { timestamps: true });

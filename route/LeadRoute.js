@@ -1,10 +1,12 @@
 import express from "express";
-import { getLeads, getLeadById, createLead, updateLead, deleteLead, addCommunication, importLeads, importBatch } from "../controller/LeadController.js";
+import { getLeads, getLeadById, createLead, updateLead, deleteLead, addCommunication, importLeads, importBatch, getFieldConfig, saveFieldConfig } from "../controller/LeadController.js";
 import { protect } from "../middleware/authMiddleware.js";
 import upload from "../middleware/multer.js";
 
 const router = express.Router();
 
+router.get("/field-config",  protect, getFieldConfig);
+router.put("/field-config",  protect, saveFieldConfig);
 router.get("/",          protect, getLeads);
 router.post("/",         protect, createLead);
 router.post("/import/batch", protect, express.json({ limit: "10mb" }), importBatch);

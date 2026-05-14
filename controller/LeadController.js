@@ -1,4 +1,5 @@
 import Lead from "../models/LeadSchema.js";
+import LeadFieldConfig from "../models/LeadFieldConfigSchema.js";
 import { parse } from "csv-parse/sync";
 
 // companyId comes from JWT — no extra DB call needed
@@ -71,7 +72,7 @@ export const getLeadById = async (req, res) => {
 export const createLead = async (req, res) => {
     try {
         const { contactNumber, orgName, address, contactPerson, designation,
-                cellNumber, email, rooms, extra, status, assignedTo } = req.body;
+                cellNumber, email, rooms, extra, status, assignedTo, customFields } = req.body;
 
         if (!contactNumber?.trim() || !orgName?.trim())
             return res.status(400).json({ message: "contactNumber and orgName are required", success: false });
@@ -83,6 +84,7 @@ export const createLead = async (req, res) => {
             address, contactPerson, designation, cellNumber,
             email:         email?.toLowerCase?.() || email,
             rooms, extra,
+            customFields:  customFields || {},
             status:        status || "New Lead",
             assignedTo:    assignedTo || null,
             createdBy:     req.user.userId,
@@ -103,21 +105,41 @@ export const updateLead = async (req, res) => {
         const FIELDS = ["contactNumber", "orgName", "address", "contactPerson",
                         "designation", "cellNumber", "email", "rooms", "extra", "status", "assignedTo"];
 
-        // Build $set only for fields explicitly present in body (null/"" are valid — clears the field)
         const $set = { updatedBy: req.user.userId };
         FIELDS.forEach(f => { if (req.body[f] !== undefined) $set[f] = req.body[f] ?? ""; });
+
+        // Merge customFields — only update keys present in payload
+        if (req.body.customFields && typeof req.body.customFields === "object") {
+            Object.entries(req.body.customFields).forEach(([k, v]) => {
+                $set[`customFields.${k}`] = v ?? "";
+            });
+        }
 
         // Read current doc lean (cheap) to build history diff
         const current = await Lead.findOne({ _id: req.params.id, companyId: cid(req) }).lean();
         if (!current) return res.status(404).json({ message: "Lead not found", success: false });
 
+        // Resolve assignedTo IDs → names for readable history
+        const resolveUser = async (id) => {
+            if (!id) return null;
+            const { default: User } = await import("../models/UserSchema.js");
+            const u = await User.findById(id).select("firstName lastName").lean();
+            return u ? `${u.firstName} ${u.lastName}` : id.toString();
+        };
+
         const changes = {};
-        FIELDS.forEach(f => {
-            if ($set[f] === undefined) return;
-            const oldVal = current[f]?.toString?.() ?? current[f] ?? null;
-            const newVal = $set[f]?.toString?.() ?? $set[f];
+        for (const f of FIELDS) {
+            if ($set[f] === undefined) continue;
+            let oldVal = current[f]?.toString?.() ?? current[f] ?? null;
+            let newVal = $set[f]?.toString?.() ?? $set[f];
+            if (f === "assignedTo") {
+                [oldVal, newVal] = await Promise.all([
+                    resolveUser(current[f]),
+                    resolveUser($set[f]),
+                ]);
+            }
             if (oldVal !== newVal) changes[f] = { from: oldVal, to: newVal };
-        });
+        }
 
         const update = { $set };
         if (Object.keys(changes).length) {
@@ -411,6 +433,39 @@ export const importBatch = async (req, res) => {
         if (commOps.length) await Lead.bulkWrite(commOps, { ordered: false });
 
         res.json({ inserted: result.upsertedCount, skipped: result.matchedCount, success: true });
+    } catch (err) {
+        res.status(500).json({ message: err.message, success: false });
+    }
+};
+
+// ── GET /api/leads/field-config ───────────────────────────────────────────────
+export const getFieldConfig = async (req, res) => {
+    try {
+        const config = await LeadFieldConfig.findOne({ companyId: cid(req) }).lean();
+        res.json({ fields: config?.fields || [], success: true });
+    } catch (err) {
+        res.status(500).json({ message: err.message, success: false });
+    }
+};
+
+// ── PUT /api/leads/field-config ───────────────────────────────────────────────
+export const saveFieldConfig = async (req, res) => {
+    try {
+        const { fields } = req.body;
+        if (!Array.isArray(fields))
+            return res.status(400).json({ message: "fields must be an array", success: false });
+
+        const keys = fields.map(f => f.key);
+        if (new Set(keys).size !== keys.length)
+            return res.status(400).json({ message: "Field keys must be unique", success: false });
+
+        const config = await LeadFieldConfig.findOneAndUpdate(
+            { companyId: cid(req) },
+            { $set: { fields } },
+            { upsert: true, new: true }
+        ).lean();
+
+        res.json({ fields: config.fields, message: "Field config saved", success: true });
     } catch (err) {
         res.status(500).json({ message: err.message, success: false });
     }
