@@ -10,17 +10,15 @@ export const getLeads = async (req, res) => {
     try {
         const { search, status, assignedTo, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const lim  = Math.min(Number(limit), 100); // hard cap — never return more than 100
+        const lim  = Math.min(Number(limit), 100);
 
         const filter = { companyId: cid(req) };
 
         if (search?.trim()) {
             const s = search.trim();
             if (/^\d+$/.test(s)) {
-                // digits-only → anchored prefix on indexed contactNumber field
                 filter.contactNumber = { $regex: `^${s}` };
             } else {
-                // text → use text index; status filter applied as post-match
                 filter.$text = { $search: s };
             }
         }
@@ -32,7 +30,7 @@ export const getLeads = async (req, res) => {
         const [leads, total] = await Promise.all([
             Lead.find(filter, {
                 contactNumber: 1, orgName: 1, contactPerson: 1,
-                cellNumber: 1, status: 1, assignedTo: 1, createdAt: 1,
+                status: 1, assignedTo: 1, createdAt: 1,
             })
                 .populate("assignedTo", "firstName lastName")
                 .sort({ createdAt: -1 })
@@ -71,8 +69,8 @@ export const getLeadById = async (req, res) => {
 // ── POST /api/leads ───────────────────────────────────────────────────────────
 export const createLead = async (req, res) => {
     try {
-        const { contactNumber, orgName, address, contactPerson, designation,
-                cellNumber, email, rooms, extra, status, assignedTo, customFields } = req.body;
+        const { contactNumber, orgName, address, contactPerson,
+                email, status, assignedTo, customFields } = req.body;
 
         if (!contactNumber?.trim() || !orgName?.trim())
             return res.status(400).json({ message: "contactNumber and orgName are required", success: false });
@@ -81,9 +79,8 @@ export const createLead = async (req, res) => {
             companyId:     cid(req),
             contactNumber: contactNumber.trim(),
             orgName:       orgName.trim(),
-            address, contactPerson, designation, cellNumber,
+            address, contactPerson,
             email:         email?.toLowerCase?.() || email,
-            rooms, extra,
             customFields:  customFields || {},
             status:        status || "New Lead",
             assignedTo:    assignedTo || null,
@@ -92,7 +89,6 @@ export const createLead = async (req, res) => {
 
         res.status(201).json({ lead, message: "Lead created", success: true });
     } catch (err) {
-        // duplicate contactNumber for same company
         if (err.code === 11000)
             return res.status(409).json({ message: "A lead with this contact number already exists", success: false });
         res.status(500).json({ message: err.message, success: false });
@@ -103,23 +99,20 @@ export const createLead = async (req, res) => {
 export const updateLead = async (req, res) => {
     try {
         const FIELDS = ["contactNumber", "orgName", "address", "contactPerson",
-                        "designation", "cellNumber", "email", "rooms", "extra", "status", "assignedTo"];
+                        "email", "status", "assignedTo"];
 
         const $set = { updatedBy: req.user.userId };
         FIELDS.forEach(f => { if (req.body[f] !== undefined) $set[f] = req.body[f] ?? ""; });
 
-        // Merge customFields — only update keys present in payload
         if (req.body.customFields && typeof req.body.customFields === "object") {
             Object.entries(req.body.customFields).forEach(([k, v]) => {
                 $set[`customFields.${k}`] = v ?? "";
             });
         }
 
-        // Read current doc lean (cheap) to build history diff
         const current = await Lead.findOne({ _id: req.params.id, companyId: cid(req) }).lean();
         if (!current) return res.status(404).json({ message: "Lead not found", success: false });
 
-        // Resolve assignedTo IDs → names for readable history
         const resolveUser = async (id) => {
             if (!id) return null;
             const { default: User } = await import("../models/UserSchema.js");
@@ -148,7 +141,6 @@ export const updateLead = async (req, res) => {
             };
         }
 
-        // Atomic update — no race condition
         const lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true })
             .populate("assignedTo", "firstName lastName")
             .lean();
@@ -199,7 +191,6 @@ export const addCommunication = async (req, res) => {
             changes:   { communication: { from: null, to: `Added: "${comm.subject}"` } },
         };
 
-        // Atomic $push — safe for 70 concurrent users on same lead
         const lead = await Lead.findOneAndUpdate(
             { _id: req.params.id, companyId: cid(req) },
             { $push: { communications: comm, history: histEntry } },
@@ -216,10 +207,6 @@ export const addCommunication = async (req, res) => {
 };
 
 // ── POST /api/leads/import/csv ────────────────────────────────────────────────
-// Columns: contactNumber*, orgName*, address, contactPerson, designation,
-//          cellNumber, email, rooms, extra, status, communication
-// communication column = description text for one initial communication entry.
-// Duplicate contactNumbers are skipped (not overwritten).
 export const importLeads = async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "No file uploaded", success: false });
@@ -255,9 +242,8 @@ export const importLeads = async (req, res) => {
         for (let i = 0; i < rows.length; i += BATCH) {
             const batch = rows.slice(i, i + BATCH).map(normalise);
 
-            // ── build bulkWrite ops ──────────────────────────────────────────
-            const ops        = [];   // bulkWrite operations
-            const commMap    = {};   // contactNumber → communication text (only for new inserts)
+            const ops     = [];
+            const commMap = {};
 
             for (const row of batch) {
                 const contactNumber = (row.contactnumber || row.contact_number || "").replace(/\D/g, "").slice(-10);
@@ -274,9 +260,8 @@ export const importLeads = async (req, res) => {
                     continue;
                 }
 
-                const status      = VALID_STATUSES.includes(row.status) ? row.status : "New Lead";
-                const commText    = (row.communication || row.note || row.notes || "").trim();
-
+                const status   = VALID_STATUSES.includes(row.status) ? row.status : "New Lead";
+                const commText = (row.communication || row.note || row.notes || "").trim();
                 if (commText) commMap[contactNumber] = commText;
 
                 ops.push({
@@ -285,13 +270,9 @@ export const importLeads = async (req, res) => {
                         update: {
                             $setOnInsert: {
                                 companyId, contactNumber, orgName,
-                                address:       row.address                                          || undefined,
-                                contactPerson: row.contactperson || row.contact_person              || undefined,
-                                designation:   row.designation                                      || undefined,
-                                cellNumber:    (row.cellnumber || row.cell_number || "").replace(/\D/g, "").slice(-10) || undefined,
-                                email:         row.email?.toLowerCase()                             || undefined,
-                                rooms:         row.rooms                                            || undefined,
-                                extra:         row.extra                                            || undefined,
+                                address:       row.address                                     || undefined,
+                                contactPerson: row.contactperson || row.contact_person         || undefined,
+                                email:         row.email?.toLowerCase()                        || undefined,
                                 status,
                                 createdBy,
                             },
@@ -307,9 +288,7 @@ export const importLeads = async (req, res) => {
             inserted += result.upsertedCount;
             skipped  += result.matchedCount;
 
-            // ── push communications for newly inserted leads ─────────────────
             const newContactNumbers = Object.keys(result.upsertedIds || {}).map(idx => {
-                // upsertedIds keys are the op index — get contactNumber from ops[idx]
                 const filter = ops[Number(idx)]?.updateOne?.filter;
                 return filter?.contactNumber;
             }).filter(Boolean);
@@ -346,8 +325,7 @@ export const importLeads = async (req, res) => {
         res.json({
             success: true,
             message: `Import complete: ${inserted} inserted, ${skipped} skipped (duplicates), ${failed} failed`,
-            inserted, skipped, failed,
-            errors,   // all errors — frontend decides how to display/download
+            inserted, skipped, failed, errors,
         });
     } catch (err) {
         res.status(500).json({ message: err.message, success: false });
@@ -355,7 +333,6 @@ export const importLeads = async (req, res) => {
 };
 
 // ── POST /api/leads/import/batch ──────────────────────────────────────────────
-// Body: { rows: [...] }  max 500 rows per call, 2 concurrent calls from client.
 export const importBatch = async (req, res) => {
     try {
         const { rows } = req.body;
@@ -389,11 +366,7 @@ export const importBatch = async (req, res) => {
                             companyId, contactNumber, orgName,
                             address:       row.address       || undefined,
                             contactPerson: row.contactPerson || undefined,
-                            designation:   row.designation   || undefined,
-                            cellNumber:    (row.cellNumber || "").replace(/\D/g, "").slice(-10) || undefined,
                             email:         row.email?.toLowerCase() || undefined,
-                            rooms:         row.rooms         || undefined,
-                            extra:         row.extra         || undefined,
                             status, createdBy,
                         },
                     },

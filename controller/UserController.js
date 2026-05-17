@@ -16,29 +16,84 @@ const normalizeDate = (date) => {
 
 export const registerUser = async (req, res) => {
     try {
-        const { firstName, lastName, email, phone, password, role, gender, employeeCode, joiningDate, dateOfBirth, companyId, department, designation, workShift, employmentStatus, reportingTo, address } = req.body;
-        if (!firstName || !lastName || !email || !phone || !password || !role || !companyId) {
-            return res.status(400).json({ message: "All fields are required", success: false });
+        const { firstName, lastName, email, phone, password, role, companyId, gender, employeeCode, joiningDate, dateOfBirth, department, designation, workShift, employmentStatus, reportingTo, address } = req.body;
+        
+        // Validate required fields
+        const errors = [];
+        if (!firstName?.trim()) errors.push("First name is required");
+        if (!lastName?.trim()) errors.push("Last name is required");
+        if (!email?.trim()) errors.push("Email is required");
+        if (!password || password.length < 6) errors.push("Password must be at least 6 characters");
+        if (!role) errors.push("Role is required");
+        if (!companyId) errors.push("Company is required");
+        
+        if (errors.length > 0) {
+            return res.status(400).json({ message: errors.join(", "), success: false, errors });
         }
-        const existingUser = await User.findOne({ email });
-        if (existingUser) return res.status(400).json({ message: "User already exists", success: false });
+
+        // Check if user already exists
+        const existingUser = await User.findOne({ email: email.toLowerCase() });
+        if (existingUser) {
+            return res.status(409).json({ message: "Email already registered. Please use a different email or login.", success: false });
+        }
+
+        // Validate phone if provided
+        if (phone && !/^[\d\s\-\+\(\)]+$/.test(phone)) {
+            return res.status(400).json({ message: "Invalid phone number format", success: false });
+        }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const user = new User({ firstName, lastName, email, phone, password: hashedPassword, role, gender, employeeCode, joiningDate: normalizeDate(joiningDate), dateOfBirth: normalizeDate(dateOfBirth), companyId, department, designation, workShift, employmentStatus, reportingTo, address, createdBy: req.user?.userId || null });
+        const user = new User({
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            email: email.toLowerCase(),
+            phone: phone?.trim() || null,
+            password: hashedPassword,
+            role,
+            companyId,
+            gender: gender || null,
+            employeeCode: employeeCode?.trim() || null,
+            joiningDate: joiningDate ? normalizeDate(joiningDate) : null,
+            dateOfBirth: dateOfBirth ? normalizeDate(dateOfBirth) : null,
+            department: department || null,
+            designation: designation || null,
+            workShift: workShift || null,
+            employmentStatus: employmentStatus || null,
+            reportingTo: reportingTo || null,
+            address: address?.trim() || null,
+            createdBy: req.user?.userId || null
+        });
+        
         await user.save();
-        res.status(201).json({ message: "User registered successfully", success: true });
-        await sendMail({ email, title: "Welcome to HRMS", msg: userCreatedTemplate(user, password) });
-        // Welcome notification
-        await createNotification({
+        
+        // Send welcome email asynchronously (don't block response)
+        sendMail({ email, title: "Welcome to HRMS", msg: userCreatedTemplate(user, password) }).catch(err => console.error("Email send error:", err));
+        
+        // Create notification asynchronously
+        createNotification({
             userId: user._id,
             title: "Welcome to HRMS! 🎉",
             message: `Hi ${firstName}, your account has been created. Start by checking your profile and attendance.`,
             type: "user",
             link: "/profile",
-        });
+        }).catch(err => console.error("Notification error:", err));
+        
+        res.status(201).json({ message: "User registered successfully", success: true, userId: user._id });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Error registering user", success: false });
+        console.error("User registration error:", error);
+        
+        // Handle specific MongoDB errors
+        if (error.code === 11000) {
+            const field = Object.keys(error.keyPattern)[0];
+            return res.status(409).json({ message: `${field} already exists. Please use a different value.`, success: false });
+        }
+        
+        if (error.name === "ValidationError") {
+            const messages = Object.values(error.errors).map(e => e.message);
+            return res.status(400).json({ message: messages.join(", "), success: false, errors: messages });
+        }
+        
+        res.status(500).json({ message: "Failed to create user. Please try again later.", success: false });
     }
 };
 

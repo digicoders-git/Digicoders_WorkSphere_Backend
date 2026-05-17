@@ -19,11 +19,7 @@ const LeadSchema = new mongoose.Schema({
     orgName:       { type: String, required: true, trim: true },
     address:       { type: String, trim: true },
     contactPerson: { type: String, trim: true },
-    designation:   { type: String, trim: true },
-    cellNumber:    { type: String, trim: true },
     email:         { type: String, trim: true, lowercase: true },
-    rooms:         { type: String, trim: true },
-    extra:         { type: String, trim: true },
     status: {
         type: String,
         enum: ["New Lead", "Contacted", "Meeting Scheduled", "Proposal Sent",
