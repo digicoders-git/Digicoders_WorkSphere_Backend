@@ -19,6 +19,8 @@ import PayrollRoute from './route/PayrollRoute.js'
 import ProjectRoute from './route/ProjectRoute.js'
 import TaskRoute from './route/TaskRoute.js'
 import LeadRoute from './route/LeadRoute.js'
+import QuoteRoute from './route/QuoteRoute.js'
+import QuoteProfileRoute from './route/QuoteProfileRoute.js'
 import cookieParser from 'cookie-parser'
 import { startScheduler } from './utills/scheduler.js'
 
@@ -58,6 +60,8 @@ app.use('/api/payroll', PayrollRoute);
 app.use('/api/projects', ProjectRoute);
 app.use('/api/tasks', TaskRoute);
 app.use('/api/leads', LeadRoute);
+app.use('/api/quotes', QuoteRoute);
+app.use('/api/quote-profiles', QuoteProfileRoute);
 
 app.get('/', (req, res) => {
     res.send("API is running")

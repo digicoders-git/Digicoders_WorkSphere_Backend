@@ -1,6 +1,7 @@
 import Role from "../models/roleSchema.js";
 import User from "../models/UserSchema.js";
 import { createNotification } from "../utills/notificationHelper.js";
+import { stripSuperAdminOnlyPermissions } from "../config/superAdminOnly.js";
 export const createRole = async (req, res) => {
     try {
         const { name, permissions } = req.body;
@@ -14,7 +15,9 @@ export const createRole = async (req, res) => {
             if (roleExists.isdeleted) {
                 roleExists.isdeleted = false;
                 roleExists.status = true;
-                roleExists.permissions = permissions || roleExists.permissions;
+                roleExists.permissions = stripSuperAdminOnlyPermissions(
+                    permissions || roleExists.permissions
+                );
                 roleExists.companyId = companyId || roleExists.companyId;
                 roleExists.createdBy = userId;
                 await roleExists.save();
@@ -22,7 +25,12 @@ export const createRole = async (req, res) => {
             }
             return res.status(400).json({ message: "Role with the same name already exists", success: false });
         }
-        const newRole = new Role({ name, permissions, companyId, createdBy: userId });
+        const newRole = new Role({
+            name,
+            permissions: stripSuperAdminOnlyPermissions(permissions),
+            companyId,
+            createdBy: userId,
+        });
         await newRole.save();
         // Notify all users in the company about new role
         const companyUsers = await User.find({ companyId }).select("_id");
@@ -111,7 +119,7 @@ export const updateRole = async (req, res) => {
             role.name = name;
         }
         if (permissions) {
-            role.permissions = permissions;
+            role.permissions = stripSuperAdminOnlyPermissions(permissions);
         }
         if (status !== undefined) {
             role.status = status;

@@ -9,24 +9,29 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-export const sendMail = async ({ email, title, msg }) => {
+/**
+ * @returns {{ ok: boolean, messageId?: string, error?: string, skipped?: boolean }}
+ */
+export const sendMail = async ({ email, title, msg, text, attachments }) => {
+    if (!email) {
+        return { ok: false, skipped: true, error: "Recipient email is required" };
+    }
+    if (!EnvData.Email_User || !EnvData.Email_Pass) {
+        return { ok: false, skipped: true, error: "Email credentials not configured on server" };
+    }
     try {
-        if (!email) {
-            console.log("Email is required to send mail — " + title);
-            return;
-        }
-        if (!EnvData.Email_User || !EnvData.Email_Pass) {
-            console.log("Email credentials not configured — skipping mail: " + title);
-            return;
-        }
         const info = await transporter.sendMail({
-            from: `"HRMS" <${EnvData.Email_User}>`,
+            from: `"DigiCoders" <${EnvData.Email_User}>`,
             to: email,
             subject: title,
             html: msg,
+            text: text || undefined,
+            attachments: attachments?.length ? attachments : undefined,
         });
         console.log("Email sent:", info.messageId);
+        return { ok: true, messageId: info.messageId };
     } catch (error) {
         console.error("Email send error:", error.message);
+        return { ok: false, error: error.message };
     }
 };

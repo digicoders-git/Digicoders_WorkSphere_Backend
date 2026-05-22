@@ -1,75 +1,104 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-import Role from "../models/RoleSchema.js";
-import User from  "../models/UserSchema.js";
 import bcrypt from "bcryptjs";
+import Role from "../models/RoleSchema.js";
+import User from "../models/UserSchema.js";
 import { permission } from "../config/permission.js";
+import { SUPER_ADMIN_ONLY_PERMISSIONS } from "../config/superAdminOnly.js";
 
 dotenv.config();
 
-// 🔥 Flatten ALL permissions from config
-const getAllPermissions = () => {
-  return Object.values(permission)
-    .flatMap((module) => Object.values(module));
-};
+const SUPER_ADMIN_EMAIL = "superadmin@hrms.com";
+const SUPER_ADMIN_PASSWORD = "SuperAdmin@123";
+
+const getAllPermissions = () =>
+  Object.values(permission).flatMap((module) => Object.values(module));
 
 const seed = async () => {
   try {
-    // 1. Connect DB
+    if (!process.env.MONGO_URI) {
+      throw new Error("MONGO_URI is not set in .env");
+    }
+
     await mongoose.connect(process.env.MONGO_URI);
     console.log("✅ MongoDB connected");
 
-    // 2. Get all permissions
     const allPermissions = getAllPermissions();
 
-    // 3. Check existing role
     let role = await Role.findOne({ name: "super_admin" });
 
     if (role) {
-      // 🔥 Update existing role
       role.permissions = allPermissions;
       role.companyId = null;
       role.status = true;
       role.isdeleted = false;
-
       await role.save();
-
       console.log("✅ Super Admin role updated");
     } else {
-      // 🔥 Create new role
-      role = new Role({
+      role = await Role.create({
         name: "super_admin",
         companyId: null,
         permissions: allPermissions,
         status: true,
         isdeleted: false,
       });
-
-      await role.save();
-
       console.log("✅ Super Admin role created");
     }
 
     console.log("Total permissions assigned:", allPermissions.length);
-    
-    let User= await mongoose.model("User").findOne({ email: "superadmin@hrms.com" });
-    if (!User) {
-      const superAdmin = new (mongoose.model("User"))({
+
+    // Remove company-management perms from any non–super-admin roles (legacy / mistaken grants)
+    const stripped = await Role.updateMany(
+      { name: { $ne: "super_admin" } },
+      { $pull: { permissions: { $in: SUPER_ADMIN_ONLY_PERMISSIONS } } }
+    );
+    if (stripped.modifiedCount > 0) {
+      console.log(`✅ Stripped company perms from ${stripped.modifiedCount} role(s)`);
+    }
+
+    const hashedPassword = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 10);
+    let existingUser = await User.findOne({ email: SUPER_ADMIN_EMAIL });
+
+    if (existingUser) {
+      existingUser.firstName = "Super";
+      existingUser.lastName = "Admin";
+      existingUser.password = hashedPassword;
+      existingUser.role = role._id;
+      existingUser.companyId = null;
+      existingUser.employeeCode = "SUPER001";
+      existingUser.joiningDate = existingUser.joiningDate || new Date();
+      existingUser.isActive = true;
+      existingUser.isDeleted = false;
+      await existingUser.save();
+      console.log("✅ Super Admin user updated");
+    } else {
+      await User.create({
         firstName: "Super",
         lastName: "Admin",
-        email: "superadmin@hrms.com",
-        password: await bcrypt.hash("superadmin@hrms.com", 10),
+        email: SUPER_ADMIN_EMAIL,
+        password: hashedPassword,
         role: role._id,
         companyId: null,
         employeeCode: "SUPER001",
         joiningDate: new Date(),
+        isActive: true,
+        isDeleted: false,
       });
-      await superAdmin.save();
+      console.log("✅ Super Admin user created");
     }
 
+    console.log("\n📧 Login credentials:");
+    console.log(`   Email:    ${SUPER_ADMIN_EMAIL}`);
+    console.log(`   Password: ${SUPER_ADMIN_PASSWORD}`);
+
+    await mongoose.disconnect();
     process.exit(0);
   } catch (error) {
-    console.error("❌ Seeder error:", error);
+    console.error("❌ Seeder error:", error.message);
+    if (error.errors) {
+      Object.values(error.errors).forEach((e) => console.error("  -", e.message));
+    }
+    await mongoose.disconnect().catch(() => {});
     process.exit(1);
   }
 };

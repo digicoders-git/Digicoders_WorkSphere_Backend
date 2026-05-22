@@ -53,7 +53,7 @@ const UserSchema = new mongoose.Schema({
     companyId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "Company",
-        required: [true, "Company is required"]
+        default: null
     },
     department: {
         type: mongoose.Schema.Types.ObjectId,

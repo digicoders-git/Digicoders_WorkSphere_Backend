@@ -64,6 +64,7 @@ npm run seed
 ```json
 {
   "email": "superadmin@hrms.com",
+  "password": "SuperAdmin@123",
   "role": "super_admin"
 }
 ```

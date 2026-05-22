@@ -106,6 +106,7 @@ export const updateLead = async (req, res) => {
 
         if (req.body.customFields && typeof req.body.customFields === "object") {
             Object.entries(req.body.customFields).forEach(([k, v]) => {
+                if (v === undefined) return;
                 $set[`customFields.${k}`] = v ?? "";
             });
         }
@@ -142,7 +143,11 @@ export const updateLead = async (req, res) => {
         }
 
         const lead = await Lead.findByIdAndUpdate(req.params.id, update, { new: true })
-            .populate("assignedTo", "firstName lastName")
+            .populate("assignedTo", "firstName lastName employeeCode profilePic")
+            .populate("createdBy", "firstName lastName")
+            .populate("updatedBy", "firstName lastName")
+            .populate("history.changedBy", "firstName lastName")
+            .populate("communications.addedBy", "firstName lastName")
             .lean();
 
         res.json({ lead, message: "Lead updated", success: true });
