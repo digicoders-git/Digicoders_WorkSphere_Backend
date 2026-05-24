@@ -2,6 +2,10 @@ import QuoteProfile from "../models/QuoteProfileSchema.js";
 import {
     QUOTE_BRANDING,
     DEFAULT_PAYMENT_NOTES,
+    DEFAULT_PAYMENT_TERMS,
+    DEFAULT_PAYMENT_BANK,
+    DEFAULT_PAYMENT_TIMELINE,
+    DEFAULT_PAYMENT_OTHER,
     buildPaymentNotesFromProfile,
 } from "../config/quoteBranding.js";
 
@@ -17,10 +21,10 @@ export const profileToBranding = (profile) => {
         address: profile.address || "",
         gstNote: profile.gstNote || QUOTE_BRANDING.gstNote,
         validityDays: profile.validityDays ?? 30,
-        paymentTerms: (profile.paymentTerms || "").trim(),
-        paymentBankDetails: (profile.paymentBankDetails || "").trim(),
-        paymentTimeline: (profile.paymentTimeline || "").trim(),
-        paymentOtherNotes: (profile.paymentOtherNotes || "").trim(),
+        paymentTerms: (profile.paymentTerms || "").trim() || DEFAULT_PAYMENT_TERMS,
+        paymentBankDetails: (profile.paymentBankDetails || "").trim() || DEFAULT_PAYMENT_BANK,
+        paymentTimeline: (profile.paymentTimeline || "").trim() || DEFAULT_PAYMENT_TIMELINE,
+        paymentOtherNotes: (profile.paymentOtherNotes || "").trim() || DEFAULT_PAYMENT_OTHER,
         paymentNotes: buildPaymentNotesFromProfile(profile),
         logoUrl: profile.logo?.url || null,
         paymentQrUrl: profile.paymentQr?.url || null,
@@ -30,10 +34,10 @@ export const profileToBranding = (profile) => {
 
 export const defaultBranding = () => ({
     ...QUOTE_BRANDING,
-    paymentTerms: "",
-    paymentBankDetails: "",
-    paymentTimeline: "",
-    paymentOtherNotes: "",
+    paymentTerms: DEFAULT_PAYMENT_TERMS,
+    paymentBankDetails: DEFAULT_PAYMENT_BANK,
+    paymentTimeline: DEFAULT_PAYMENT_TIMELINE,
+    paymentOtherNotes: DEFAULT_PAYMENT_OTHER,
     paymentNotes: DEFAULT_PAYMENT_NOTES,
     logoUrl: null,
     paymentQrUrl: null,
@@ -47,9 +51,10 @@ export const resolveQuoteBranding = async (quote, companyId) => {
     const cid = companyId || quote?.companyId;
     let profile = null;
 
-    if (quote?.quoteProfileId) {
+    const profileId = quote?.quoteProfileId?._id ?? quote?.quoteProfileId;
+    if (profileId) {
         profile = await QuoteProfile.findOne({
-            _id: quote.quoteProfileId,
+            _id: profileId,
             companyId: cid,
             isDeleted: false,
         }).lean();

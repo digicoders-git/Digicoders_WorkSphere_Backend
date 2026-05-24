@@ -1,6 +1,7 @@
 import Quote from "../models/QuoteSchema.js";
 import Lead from "../models/LeadSchema.js";
 import LeadFieldConfig from "../models/LeadFieldConfigSchema.js";
+import QuoteProfile from "../models/QuoteProfileSchema.js";
 import { sendMail } from "../utills/SendEmail.js";
 import { buildQuoteHtml } from "../utills/quoteHtmlBuilder.js";
 import { resolveQuoteBranding } from "../utills/resolveQuoteBranding.js";
@@ -22,9 +23,9 @@ const getClientBaseUrl = () =>
     (EnvData.CLIENT_URL || "http://localhost:5173").split(",")[0].trim();
 
 const quotePopulate = [
-    { path: "leadId", select: "orgName contactPerson email contactNumber address status" },
+    { path: "leadId", select: "orgName contactPerson email contactNumber address status customFields" },
     { path: "createdBy updatedBy", select: "firstName lastName email" },
-    { path: "quoteProfileId", select: "name companyName logo" },
+    { path: "quoteProfileId", select: "name companyName tagline email phone website address logo paymentQr paymentTerms paymentBankDetails paymentTimeline paymentOtherNotes gstNote validityDays" },
     { path: "sendHistory.sentBy", select: "firstName lastName email" },
     { path: "activityLog.performedBy", select: "firstName lastName email" },
     { path: "followUps.createdBy followUps.completedBy", select: "firstName lastName email" },
@@ -131,6 +132,14 @@ const syncLeadOnQuoteSend = async (lead, quote, { to, userId, isResend, success,
 
 const populateQuote = async (quote) => quote.populate(quotePopulate);
 
+const resolveDefaultQuoteProfileId = async (companyId) => {
+    if (!companyId) return null;
+    const profile = await QuoteProfile.findOne({ companyId, isDefault: true, isDeleted: false })
+        .select("_id")
+        .lean();
+    return profile?._id ?? null;
+};
+
 export const createQuote = async (req, res) => {
     try {
         const {
@@ -162,6 +171,8 @@ export const createQuote = async (req, res) => {
         const cleanTech = sanitizeTechStack(techStack);
         const cleanReqs = sanitizeRequirements(otherRequirements);
         const totals = calcTotals(cleanPages, cleanReqs);
+        const profileId =
+            quoteProfileId || (await resolveDefaultQuoteProfileId(companyId)) || undefined;
 
         const quote = new Quote({
             leadId,
@@ -180,7 +191,7 @@ export const createQuote = async (req, res) => {
             otherRequirements: cleanReqs,
             ...totals,
             notes: notes?.trim() || "",
-            quoteProfileId: quoteProfileId || undefined,
+            quoteProfileId: profileId,
             createdBy: userId,
             activityLog: [],
             sendHistory: [],
@@ -204,15 +215,55 @@ export const createQuote = async (req, res) => {
     }
 };
 
+export const getAllQuotes = async (req, res) => {
+    try {
+        const companyId = req.user.company; // JWT stores company field
+        if (!companyId) return res.status(400).json({ message: "Company context missing", success: false });
+        const { status, search, page = 1, limit = 30 } = req.query;
+        const filter = { companyId };
+        if (status) {
+            const VALID = ["draft", "sent", "accepted", "rejected"];
+            if (!VALID.includes(status)) return res.status(400).json({ message: "Invalid status filter", success: false });
+            filter.status = status;
+        }
+        if (search?.trim()) {
+            filter.$or = [
+                { systemName: { $regex: search.trim(), $options: "i" } },
+                { title: { $regex: search.trim(), $options: "i" } },
+            ];
+        }
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
+        const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 30));
+        const skip = (pageNum - 1) * limitNum;
+        const [quotes, total] = await Promise.all([
+            Quote.find(filter)
+                .populate("leadId", "orgName contactPerson email contactNumber")
+                .populate("createdBy", "firstName lastName")
+                .select("-sendHistory -activityLog -pages -techStack -otherRequirements -followUps")
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limitNum),
+            Quote.countDocuments(filter),
+        ]);
+        res.json({ success: true, quotes, total, page: pageNum, limit: limitNum });
+    } catch (error) {
+        console.error("Error fetching all quotes:", error);
+        res.status(500).json({ message: "Failed to fetch quotes", success: false });
+    }
+};
+
 export const getQuotesByLead = async (req, res) => {
     try {
         const { leadId } = req.params;
-        const { companyId } = req.query;
+        const companyId = req.query.companyId || req.user.company;
+
+        if (!companyId) return res.status(400).json({ message: "Company context missing", success: false });
 
         const quotes = await Quote.find({ leadId, companyId })
             .populate("createdBy", "firstName lastName email")
             .populate("updatedBy", "firstName lastName email")
             .populate("leadId", "orgName contactPerson email contactNumber")
+            .populate("quoteProfileId", "name companyName tagline email phone website address logo paymentQr paymentTerms paymentBankDetails paymentTimeline paymentOtherNotes gstNote validityDays")
             .sort({ createdAt: -1 });
 
         res.json({ success: true, quotes });
@@ -225,8 +276,9 @@ export const getQuotesByLead = async (req, res) => {
 export const getQuoteById = async (req, res) => {
     try {
         const { quoteId } = req.params;
+        const companyId = req.user.company;
 
-        const quote = await Quote.findById(quoteId).populate(quotePopulate);
+        const quote = await Quote.findOne({ _id: quoteId, companyId }).populate(quotePopulate);
 
         if (!quote) {
             return res.status(404).json({ message: "Quote not found", success: false });
@@ -243,7 +295,8 @@ export const updateQuote = async (req, res) => {
     try {
         const { quoteId } = req.params;
         const userId = req.user.userId;
-        const existing = await Quote.findById(quoteId);
+        const companyId = req.user.company;
+        const existing = await Quote.findOne({ _id: quoteId, companyId });
         if (!existing) {
             return res.status(404).json({ message: "Quote not found", success: false });
         }
@@ -354,7 +407,8 @@ export const deleteQuote = async (req, res) => {
     try {
         const { quoteId } = req.params;
         const userId = req.user.userId;
-        const quote = await Quote.findById(quoteId).populate("leadId", "orgName");
+        const companyId = req.user.company;
+        const quote = await Quote.findOne({ _id: quoteId, companyId }).populate("leadId", "orgName");
         if (!quote) {
             return res.status(404).json({ message: "Quote not found", success: false });
         }
@@ -390,22 +444,41 @@ export const deleteQuote = async (req, res) => {
     }
 };
 
+const buildPlaceholderContextForQuote = async (quote, branding) => {
+    const fieldConfigDoc = await LeadFieldConfig.findOne({ companyId: quote.companyId }).lean();
+    const fieldConfig = fieldConfigDoc?.fields || [];
+    const sender = {
+        name: quote.createdBy
+            ? `${quote.createdBy.firstName || ""} ${quote.createdBy.lastName || ""}`.trim() || "Team"
+            : branding?.companyName || "Team",
+        email: quote.createdBy?.email || "",
+    };
+    return buildQuotePlaceholderContext(quote, quote.leadId, branding, sender, fieldConfig);
+};
+
+const buildQuoteHtmlForQuote = async (quote) => {
+    const branding = await resolveQuoteBranding(quote, quote.companyId);
+    const placeholderContext = await buildPlaceholderContextForQuote(quote, branding);
+    return buildQuoteHtml(quote, quote.leadId, {
+        clientBaseUrl: getClientBaseUrl(),
+        branding,
+        placeholderContext,
+    });
+};
+
 export const getQuoteHTML = async (req, res) => {
     try {
         const { quoteId } = req.params;
-        const quote = await Quote.findById(quoteId)
-            .populate("leadId", "orgName contactPerson email contactNumber address")
+        const companyId = req.user.company;
+        const quote = await Quote.findOne({ _id: quoteId, companyId })
+            .populate("leadId", "orgName contactPerson email contactNumber address status customFields")
             .populate("createdBy", "firstName lastName email");
 
         if (!quote) {
             return res.status(404).json({ message: "Quote not found", success: false });
         }
 
-        const branding = await resolveQuoteBranding(quote, quote.companyId);
-        const html = buildQuoteHtml(quote, quote.leadId, {
-            clientBaseUrl: getClientBaseUrl(),
-            branding,
-        });
+        const html = await buildQuoteHtmlForQuote(quote);
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.send(html);
     } catch (error) {
@@ -417,7 +490,8 @@ export const getQuoteHTML = async (req, res) => {
 export const getQuoteSendDefaults = async (req, res) => {
     try {
         const { quoteId } = req.params;
-        const quote = await Quote.findById(quoteId)
+        const companyId = req.user.company;
+        const quote = await Quote.findOne({ _id: quoteId, companyId })
             .populate("leadId", "orgName contactPerson email contactNumber address status customFields")
             .populate("createdBy", "firstName lastName email");
 
@@ -432,7 +506,7 @@ export const getQuoteSendDefaults = async (req, res) => {
         const sender = {
             name: quote.createdBy
                 ? `${quote.createdBy.firstName || ""} ${quote.createdBy.lastName || ""}`.trim() || "Team"
-                : "Team DigiCoders",
+                : branding.companyName || "Team",
             email: quote.createdBy?.email || "",
         };
         const ctx = buildQuotePlaceholderContext(quote, quote.leadId, branding, sender, fieldConfig);
@@ -461,9 +535,10 @@ export const sendQuoteToCustomer = async (req, res) => {
             subject: subjectTemplate,
             body: bodyTemplate,
         } = req.body;
-        const userId = req.user.userId;
+        const userId    = req.user.userId;
+        const companyId = req.user.company;
 
-        const quote = await Quote.findById(quoteId)
+        const quote = await Quote.findOne({ _id: quoteId, companyId })
             .populate("leadId", "orgName contactPerson email contactNumber address status customFields")
             .populate("createdBy", "firstName lastName email");
 
@@ -489,7 +564,7 @@ export const sendQuoteToCustomer = async (req, res) => {
         const sender = {
             name: quote.createdBy
                 ? `${quote.createdBy.firstName || ""} ${quote.createdBy.lastName || ""}`.trim() || "Team"
-                : "Team DigiCoders",
+                : branding.companyName || "Team",
             email: quote.createdBy?.email || "",
         };
         const ctx = buildQuotePlaceholderContext(quote, quote.leadId, branding, sender, fieldConfig);
@@ -500,18 +575,20 @@ export const sendQuoteToCustomer = async (req, res) => {
         const bodyText = applyQuotePlaceholders(bodyRaw, ctx);
         const emailHtml = quoteEmailBodyToHtml(bodyText);
 
-        const quoteHtml = buildQuoteHtml(quote, quote.leadId, {
-            clientBaseUrl: getClientBaseUrl(),
-            branding,
-        });
+        const quoteHtml = await buildQuoteHtmlForQuote(quote);
 
         let pdfBuffer;
         try {
             pdfBuffer = await generateQuotePdfBuffer(quoteHtml);
         } catch (pdfErr) {
             console.error("PDF generation failed:", pdfErr);
+            const detail = pdfErr?.message || "";
+            const needsChrome =
+                /chrome|chromium|puppeteer|not found/i.test(detail);
             return res.status(500).json({
-                message: "Failed to generate quote PDF. Ensure Puppeteer/Chromium is available on the server.",
+                message: needsChrome
+                    ? `${detail} Run in server folder: npm run install:chrome`
+                    : `Failed to generate quote PDF. ${detail}`.trim(),
                 success: false,
             });
         }
@@ -576,11 +653,13 @@ export const sendQuoteToCustomer = async (req, res) => {
         await populateQuote(quote);
 
         if (!mailResult.ok) {
+            const emailMsg = mailResult.skipped
+                ? mailResult.error || "Email is not configured on the server (Email_User / Email_Pass in .env)."
+                : mailResult.error || "Failed to send email";
             return res.status(502).json({
-                message: mailResult.error || "Failed to send email",
+                message: emailMsg,
                 success: false,
                 quote,
-                mailResult,
             });
         }
 
@@ -599,19 +678,26 @@ export const addQuoteFollowUp = async (req, res) => {
     try {
         const { quoteId } = req.params;
         const { scheduledAt, note } = req.body;
-        const userId = req.user.userId;
+        const userId    = req.user.userId;
+        const companyId = req.user.company;
 
         if (!scheduledAt) {
             return res.status(400).json({ message: "Follow-up date is required", success: false });
         }
 
-        const quote = await Quote.findById(quoteId);
+        // Validate date
+        const parsedDate = new Date(scheduledAt);
+        if (isNaN(parsedDate.getTime())) {
+            return res.status(400).json({ message: "Invalid follow-up date", success: false });
+        }
+
+        const quote = await Quote.findOne({ _id: quoteId, companyId });
         if (!quote) {
             return res.status(404).json({ message: "Quote not found", success: false });
         }
 
         const followUp = {
-            scheduledAt: new Date(scheduledAt),
+            scheduledAt: parsedDate,
             note: (note || "").trim(),
             status: "pending",
             createdBy: userId,
@@ -644,9 +730,10 @@ export const updateQuoteFollowUp = async (req, res) => {
     try {
         const { quoteId, followUpId } = req.params;
         const { status, note, scheduledAt } = req.body;
-        const userId = req.user.userId;
+        const userId    = req.user.userId;
+        const companyId = req.user.company;
 
-        const quote = await Quote.findById(quoteId);
+        const quote = await Quote.findOne({ _id: quoteId, companyId });
         if (!quote) {
             return res.status(404).json({ message: "Quote not found", success: false });
         }

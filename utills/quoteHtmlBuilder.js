@@ -1,4 +1,5 @@
 import { DEFAULT_PAYMENT_NOTES } from "../config/quoteBranding.js";
+import { applyQuotePlaceholders } from "../config/quoteEmailTemplates.js";
 import { defaultBranding } from "./resolveQuoteBranding.js";
 
 const esc = (s) =>
@@ -28,6 +29,12 @@ export const buildQuoteHtml = (quote, lead, options = {}) => {
     const baseUrl = (options.clientBaseUrl || "http://localhost:5173").replace(/\/$/, "");
     const b = options.branding || defaultBranding();
     const logoUrl = b.logoUrl || `${baseUrl}/logo.png`;
+    const phCtx = options.placeholderContext || null;
+    const ph = (text) => {
+        if (text == null || text === "") return "";
+        const resolved = phCtx ? applyQuotePlaceholders(String(text), phCtx) : String(text);
+        return esc(resolved);
+    };
 
     const currentDate = new Date(quote.createdAt || Date.now()).toLocaleDateString("en-IN", {
         year: "numeric",
@@ -44,40 +51,37 @@ export const buildQuoteHtml = (quote, lead, options = {}) => {
     const pages = quote.pages?.filter((p) => p.name) || [];
     const tech = quote.techStack?.filter((t) => t.label) || [];
     const reqs = quote.otherRequirements?.filter((r) => r.requirement) || [];
-    const quoteNotesOverride = quote.notes?.trim() || "";
+    const quoteNotes = quote.notes?.trim() || "";
 
     const buildPaymentSection = () => {
-        if (quoteNotesOverride) {
-            return `<div class="notes">${esc(quoteNotesOverride)}</div>`;
-        }
         const blocks = [];
         if (b.paymentTerms) {
             blocks.push(
-                `<p class="pay-label">Payment terms</p><div class="notes">${esc(b.paymentTerms)}</div>`
+                `<div class="pay-block"><p class="pay-label">Payment terms</p><div class="notes">${esc(b.paymentTerms)}</div></div>`
             );
         }
         if (b.paymentBankDetails) {
             blocks.push(
-                `<p class="pay-label">Bank &amp; payment details</p><div class="notes">${esc(b.paymentBankDetails)}</div>`
+                `<div class="pay-block"><p class="pay-label">Bank &amp; payment details</p><div class="notes">${esc(b.paymentBankDetails)}</div></div>`
             );
         }
         if (b.paymentTimeline) {
             blocks.push(
-                `<p class="pay-label">Development timeline</p><div class="notes">${esc(b.paymentTimeline)}</div>`
+                `<div class="pay-block"><p class="pay-label">Development timeline</p><div class="notes">${esc(b.paymentTimeline)}</div></div>`
             );
         }
         if (b.paymentOtherNotes) {
             blocks.push(
-                `<p class="pay-label">Additional notes</p><div class="notes">${esc(b.paymentOtherNotes)}</div>`
+                `<div class="pay-block"><p class="pay-label">Additional notes</p><div class="notes">${esc(b.paymentOtherNotes)}</div></div>`
             );
         }
         if (b.paymentQrUrl) {
             blocks.push(
-                `<div class="payment-qr-wrap"><p class="pay-label">Scan to pay (UPI / QR)</p><img class="payment-qr" src="${esc(b.paymentQrUrl)}" alt="Payment QR" /></div>`
+                `<div class="pay-block payment-qr-wrap"><p class="pay-label">Scan to pay (UPI / QR)</p><img class="payment-qr" src="${esc(b.paymentQrUrl)}" alt="Payment QR" /></div>`
             );
         }
         if (blocks.length) return blocks.join("");
-        return `<div class="notes">${esc(b.paymentNotes || DEFAULT_PAYMENT_NOTES)}</div>`;
+        return `<div class="pay-block"><div class="notes">${esc(b.paymentNotes || DEFAULT_PAYMENT_NOTES)}</div></div>`;
     };
 
     const paymentSectionHtml = buildPaymentSection();
@@ -86,7 +90,7 @@ export const buildQuoteHtml = (quote, lead, options = {}) => {
         .map(
             (page, i) => `
         <tr>
-            <td><strong>${String.fromCharCode(97 + i)}. ${esc(page.name)}</strong></td>
+            <td><strong>${String.fromCharCode(97 + i)}. ${ph(page.name)}</strong></td>
             <td>One Time</td>
             <td class="amount">${fmt(page.cost)}</td>
         </tr>`
@@ -99,14 +103,14 @@ export const buildQuoteHtml = (quote, lead, options = {}) => {
         <div class="module-card">
             <div class="module-head">
                 <span class="module-letter">${String.fromCharCode(97 + i)}.</span>
-                <span class="module-title">${esc(page.name)}</span>
+                <span class="module-title">${ph(page.name)}</span>
                 <span class="module-cost">[Cost: ${fmt(page.cost)}]</span>
             </div>
             ${
                 page.descriptions?.filter(Boolean).length
                     ? `<ul class="feature-list">${page.descriptions
                           .filter(Boolean)
-                          .map((d) => `<li>${esc(d)}</li>`)
+                          .map((d) => `<li>${ph(d)}</li>`)
                           .join("")}</ul>`
                     : ""
             }
@@ -124,50 +128,63 @@ export const buildQuoteHtml = (quote, lead, options = {}) => {
         * { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; width: 210mm; max-width: 210mm; color: #1e293b; background: #fff; font-size: 12px; line-height: 1.45; font-family: "Segoe UI", Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         .page { width: 100%; max-width: 186mm; margin: 0 auto; padding: 8mm 10mm 12mm; }
-        .cover { text-align: center; padding-bottom: 20px; border-bottom: 3px solid #0d47a1; margin-bottom: 24px; }
+        .cover { text-align: center; padding-bottom: 20px; border-bottom: 3px solid #0d47a1; margin-bottom: 24px; break-inside: avoid; page-break-inside: avoid; }
         .cover img { height: 56px; margin-bottom: 10px; }
         .cover h1 { margin: 0; font-size: 20px; color: #0d47a1; font-weight: 700; }
         .cover .company { font-size: 14px; color: #334155; margin-top: 6px; font-weight: 600; }
         .cover .tag { font-size: 12px; color: #64748b; margin-top: 4px; }
-        .salutation { background: #f8fafc; border-left: 4px solid #0d47a1; padding: 14px 16px; margin-bottom: 22px; font-size: 13px; color: #475569; }
+        .salutation { background: #f8fafc; border-left: 4px solid #0d47a1; padding: 14px 16px; margin-bottom: 22px; font-size: 13px; color: #475569; break-inside: avoid; page-break-inside: avoid; }
         .salutation strong { color: #0f172a; }
+        /* Headings stay with the following content; large sections may span pages */
+        .section-block { break-inside: auto; page-break-inside: auto; }
+        .section-block-inner { break-inside: auto; page-break-inside: auto; }
         h2.section { font-size: 14px; color: #0d47a1; margin: 18px 0 10px; padding-bottom: 5px; border-bottom: 2px solid #e2e8f0; break-after: avoid; page-break-after: avoid; }
-        .client-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+        .pay-block { break-inside: avoid; page-break-inside: avoid; margin-bottom: 8px; }
+        .client-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; break-inside: avoid; page-break-inside: avoid; }
         .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; font-weight: 700; margin-bottom: 2px; }
         .value { font-size: 13px; margin-bottom: 10px; }
-        .system-banner { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 1px solid #93c5fd; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; }
+        .system-banner { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 1px solid #93c5fd; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; break-inside: avoid; page-break-inside: avoid; }
         .system-banner .line1 { font-size: 12px; color: #1d4ed8; font-weight: 600; }
         .system-banner .line2 { font-size: 18px; font-weight: 700; color: #0d47a1; margin-top: 4px; }
         .module-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; break-inside: avoid; page-break-inside: avoid; }
+        /* Table: keep thead visible on every page it appears */
         thead { display: table-header-group; }
         tr { break-inside: avoid; page-break-inside: avoid; }
+        /* Continued label shown on thead when table spans pages */
+        table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; }
+        table.continuable { break-inside: auto; page-break-inside: auto; }
+        table.continuable thead th { position: relative; }
+        table.continuable thead::after { content: ""; }
+        /* When a table row group continues on next page, thead repeats automatically via display:table-header-group */
         .module-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 8px; }
         .module-letter { font-weight: 700; color: #0d47a1; }
         .module-title { font-weight: 700; font-size: 14px; flex: 1; }
         .module-cost { font-weight: 700; color: #0d47a1; font-size: 12px; }
         .feature-list { margin: 0; padding-left: 20px; color: #475569; }
         .feature-list li { margin-bottom: 4px; }
-        table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; }
         th { background: #0d47a1; color: #fff; padding: 10px 12px; text-align: left; font-size: 11px; text-transform: uppercase; }
         td { padding: 10px 12px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
         .amount { text-align: right; white-space: nowrap; font-weight: 600; }
         tr.subtotal td { background: #f1f5f9; font-weight: 700; }
         tr.grand td { background: #0d47a1; color: #fff; font-size: 15px; font-weight: 700; }
         tr.gst td { background: #fef3c7; color: #92400e; font-size: 12px; }
-        .tech-line { padding: 8px 12px; background: #f8fafc; border-left: 3px solid #3b82f6; margin-bottom: 8px; font-size: 12px; }
-        .notes { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 16px; white-space: pre-wrap; font-size: 12px; color: #78350f; margin-bottom: 10px; }
-        .pay-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #0d47a1; font-weight: 700; margin: 14px 0 6px; }
+        .tech-line { padding: 8px 12px; background: #f8fafc; border-left: 3px solid #3b82f6; margin-bottom: 8px; font-size: 12px; break-inside: avoid; page-break-inside: avoid; }
+        .notes { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 16px; white-space: pre-wrap; font-size: 12px; color: #78350f; margin-bottom: 10px; break-inside: avoid; page-break-inside: avoid; }
+        .pay-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #0d47a1; font-weight: 700; margin: 14px 0 6px; break-after: avoid; page-break-after: avoid; }
         .payment-qr-wrap { text-align: center; margin: 16px 0 8px; break-inside: avoid; page-break-inside: avoid; }
         .payment-qr { max-width: 168px; height: auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px; background: #fff; }
-        .footer { margin-top: 28px; padding-top: 16px; border-top: 2px solid #e2e8f0; font-size: 11px; color: #64748b; }
-        .sign-row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px; }
+        .footer { margin-top: 28px; padding-top: 16px; border-top: 2px solid #e2e8f0; font-size: 11px; color: #64748b; break-inside: avoid; page-break-inside: avoid; }
+        .sign-row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px; break-inside: avoid; page-break-inside: avoid; }
         .sign-box { border-top: 1px solid #94a3b8; padding-top: 8px; min-height: 48px; font-size: 11px; color: #64748b; }
         @media print {
             html, body { width: 210mm; margin: 0; padding: 0; background: #fff !important; }
             .page { width: 100% !important; max-width: none !important; margin: 0 !important; padding: 10mm !important; }
-            .module-card, table, tr, .notes, .sign-row { break-inside: avoid; page-break-inside: avoid; }
-            h2.section { break-after: avoid; page-break-after: avoid; }
+            .module-card, .pay-block, .sign-row, .salutation, .system-banner, .client-grid, .cover, .footer, .tech-line, .payment-qr-wrap { break-inside: avoid; page-break-inside: avoid; }
+            .notes { break-inside: auto; page-break-inside: auto; }
+            h2.section, .pay-label { break-after: avoid; page-break-after: avoid; }
             thead { display: table-header-group; }
+            tr { break-inside: avoid; page-break-inside: avoid; }
+            table.continuable tr { break-inside: avoid; page-break-inside: avoid; }
         }
     </style>
 </head>
@@ -199,62 +216,58 @@ export const buildQuoteHtml = (quote, lead, options = {}) => {
             <div>
                 <div class="label">Quote date</div>
                 <div class="value">${currentDate}</div>
-                <div class="label">Status</div>
-                <div class="value" style="text-transform:capitalize;">${esc(quote.status)}</div>
-                ${
-                    quote.createdBy
-                        ? `<div class="label">Prepared by</div><div class="value">${esc(quote.createdBy.firstName)} ${esc(quote.createdBy.lastName)}</div>`
-                        : ""
-                }
             </div>
         </div>
 
         <div class="system-banner">
             <div class="line1">Proposed System for &rarr; ${esc(proposedLabel)}</div>
-            <div class="line2">1. System Name &rarr; ${esc(quote.systemName)}</div>
+            <div class="line2">1. System Name &rarr; ${ph(quote.systemName)}</div>
         </div>
 
         ${
             moduleBlocks
-                ? `<h2 class="section">Modules &amp; features</h2>${moduleBlocks}`
+                ? `<div class="section-block"><h2 class="section">Modules &amp; features</h2><div class="section-block-inner">${moduleBlocks}</div></div>`
                 : ""
         }
 
         ${
             tech.length
-                ? `<h2 class="section">Tech Stack</h2>${tech
-                      .map((t) => `<div class="tech-line">${esc(t.label)}${t.value ? ` — ${esc(t.value)}` : ""}</div>`)
-                      .join("")}`
+                ? `<div class="section-block"><h2 class="section">Tech Stack</h2><div class="section-block-inner">${tech
+                      .map((t) => `<div class="tech-line">${ph(t.label)}${t.value ? ` — ${ph(t.value)}` : ""}</div>`)
+                      .join("")}</div></div>`
                 : ""
         }
 
         ${
             reqs.length
                 ? `
-        <h2 class="section">Other Requirements for &rarr; ${esc(quote.systemName)}</h2>
-        <table>
+        <div class="section-block">
+        <h2 class="section">Other Requirements for &rarr; ${ph(quote.systemName)}</h2>
+        <table class="continuable">
             <thead><tr><th>Requirement</th><th>Term</th><th class="amount">Price</th></tr></thead>
             <tbody>
                 ${reqs
                     .map(
                         (r) => `
                 <tr>
-                    <td>${esc(r.requirement)}</td>
-                    <td>${esc(r.term || "—")}</td>
+                    <td>${ph(r.requirement)}</td>
+                    <td>${ph(r.term || "—")}</td>
                     <td class="amount">${formatReqPrice(r)}</td>
                 </tr>`
                     )
                     .join("")}
             </tbody>
-        </table>`
+        </table>
+        </div>`
                 : ""
         }
 
         ${
             pages.length
                 ? `
+        <div class="section-block">
         <h2 class="section">Costing for development</h2>
-        <table>
+        <table class="continuable">
             <thead><tr><th>Module / Page</th><th>Term</th><th class="amount">Price</th></tr></thead>
             <tbody>
                 ${pagesRows}
@@ -267,15 +280,28 @@ export const buildQuoteHtml = (quote, lead, options = {}) => {
                 <tr class="gst"><td colspan="2">${esc(b.gstNote)}</td><td class="amount">—</td></tr>
                 <tr class="grand"><td colspan="2">Offered Price / Net Amount</td><td class="amount">${fmt(quote.grandTotal)}</td></tr>
             </tbody>
-        </table>`
+        </table>
+        </div>`
                 : `
         <table><tbody>
             <tr class="grand"><td colspan="2">Offered Price / Net Amount</td><td class="amount">${fmt(quote.grandTotal)}</td></tr>
         </tbody></table>`
         }
 
+        ${
+            quoteNotes
+                ? `
+        <div class="section-block">
+        <h2 class="section">Notes &amp; Terms</h2>
+        <div class="notes">${ph(quoteNotes)}</div>
+        </div>`
+                : ""
+        }
+
+        <div class="section-block">
         <h2 class="section">Payment method &amp; terms</h2>
         ${paymentSectionHtml}
+        </div>
 
         <div class="sign-row">
             <div class="sign-box"><strong>Client</strong><br/>Authorized signatory</div>

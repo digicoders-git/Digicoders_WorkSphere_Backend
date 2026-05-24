@@ -18,6 +18,11 @@ const requirementSchema = new mongoose.Schema({
     priceType: { type: String, enum: ["amount", "client_side"], default: "amount" },
 }, { _id: true });
 
+const paymentDetailSchema = new mongoose.Schema({
+    label: { type: String, required: true, trim: true },
+    value: { type: String, trim: true, default: "" },
+}, { _id: true });
+
 const sendHistorySchema = new mongoose.Schema({
     sentAt: { type: Date, default: Date.now },
     sentBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
@@ -109,6 +114,7 @@ const QuoteSchema = new mongoose.Schema({
     pages: [pageSchema],
     techStack: [techStackSchema],
     otherRequirements: [requirementSchema],
+    paymentDetails: [paymentDetailSchema],
 
     totalPagesCost: {
         type: Number,
@@ -126,6 +132,10 @@ const QuoteSchema = new mongoose.Schema({
     notes: {
         type: String,
         trim: true,
+    },
+    leadFieldsToDisplay: {
+        type: [String],
+        default: [],
     },
     status: {
         type: String,

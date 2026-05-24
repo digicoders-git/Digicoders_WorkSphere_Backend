@@ -10,6 +10,8 @@
     "start": "node index.js",
     "seed": "node scripts/seedSuperAdmin.js",
     "dev": "nodemon index.js",
+    "postinstall": "node node_modules/puppeteer/install.mjs",
+    "install:chrome": "npx puppeteer browsers install chrome",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

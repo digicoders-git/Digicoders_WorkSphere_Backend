@@ -268,8 +268,18 @@ export const deleteQuoteProfile = async (req, res) => {
         const profile = await QuoteProfile.findOne({ _id: req.params.id, companyId: cid(req), isDeleted: false });
         if (!profile) return res.status(404).json({ message: "Profile not found", success: false });
 
+        // Check if this is the only non-deleted profile
+        const activeCount = await QuoteProfile.countDocuments({ companyId: cid(req), isDeleted: false });
+        if (activeCount <= 1) {
+            return res.status(400).json({ 
+                message: "Cannot delete the last profile. Create a new profile before deleting this one.", 
+                success: false 
+            });
+        }
+
         const snap = snapshotProfile(profile);
         const wasDefault = profile.isDefault;
+        const profileName = profile.name;
         profile.isDeleted = true;
         profile.isDefault = false;
         profile.history.push({
@@ -289,7 +299,11 @@ export const deleteQuoteProfile = async (req, res) => {
             }
         }
 
-        res.json({ success: true, message: "Quote profile deleted" });
+        res.json({ 
+            success: true, 
+            message: `Profile "${profileName}" deleted successfully`,
+            profile: { _id: profile._id, isDeleted: true, name: profileName }
+        });
     } catch (err) {
         res.status(500).json({ message: err.message, success: false });
     }
