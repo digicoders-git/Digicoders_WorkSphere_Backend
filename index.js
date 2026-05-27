@@ -19,14 +19,13 @@ import PayrollRoute from './route/PayrollRoute.js'
 import ProjectRoute from './route/ProjectRoute.js'
 import TaskRoute from './route/TaskRoute.js'
 import LeadRoute from './route/LeadRoute.js'
-import QuoteRoute from './route/QuoteRoute.js'
-import QuoteProfileRoute from './route/QuoteProfileRoute.js'
+import ProposalRoute from './route/ProposalRoute.js'
 import cookieParser from 'cookie-parser'
 import { startScheduler } from './utills/scheduler.js'
 
 import EnvData from './config/EnvData.js'
 const app= express();
-app.use(express.json({ limit: "10mb" }))  // raised for lead batch imports (500 rows ~150kb each)
+app.use(express.json({ limit: "50mb" }))  // raised for PDF base64 storage in proposals
 app.use(cookieParser())
 
 const allowedOrigins = EnvData.CLIENT_URL
@@ -60,8 +59,7 @@ app.use('/api/payroll', PayrollRoute);
 app.use('/api/projects', ProjectRoute);
 app.use('/api/tasks', TaskRoute);
 app.use('/api/leads', LeadRoute);
-app.use('/api/quotes', QuoteRoute);
-app.use('/api/quote-profiles', QuoteProfileRoute);
+app.use('/api/proposals', ProposalRoute);
 
 app.get('/', (req, res) => {
     res.send("API is running")

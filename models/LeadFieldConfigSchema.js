@@ -1,11 +1,13 @@
 import mongoose from "mongoose";
 
 const fieldSchema = new mongoose.Schema({
-    key:      { type: String, required: true },   // e.g. "budget"
-    label:    { type: String, required: true },   // e.g. "Budget"
-    type:     { type: String, required: true, enum: ["text", "number", "date", "dropdown"] },
+    key:      { type: String, required: true },
+    label:    { type: String, required: true },
+    type:     { type: String, required: true, enum: ["text", "number", "date", "dropdown", "table"] },
     required: { type: Boolean, default: false },
-    options:  [{ label: String, value: String }], // only for dropdown
+    options:  [{ label: String, value: String }],  // dropdown
+    columns:  [{ key: String, label: String, type: { type: String, default: "text" } }], // table
+    placeholder: { type: String, default: "" },
     order:    { type: Number, default: 0 },
 }, { _id: false });
 
